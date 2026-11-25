@@ -176,11 +176,7 @@ fn append_as_stereo(src: &[f32], channels: usize, frames: usize, dst: &mut Vec<f
     }
 }
 
-fn resample_stereo(
-    stereo: &[f32],
-    src_rate: u32,
-    dst_rate: u32,
-) -> Result<Vec<f32>, DecodeError> {
+fn resample_stereo(stereo: &[f32], src_rate: u32, dst_rate: u32) -> Result<Vec<f32>, DecodeError> {
     let input_frames = stereo.len() / 2;
     if input_frames == 0 {
         return Ok(Vec::new());

@@ -45,8 +45,7 @@ impl TrackStem {
     /// Creates a [`TrackStem`] from a decoded buffer and millisecond offset.
     #[must_use]
     pub fn new(audio: DecodedAudio, offset_ms: f64) -> Self {
-        let offset_frames =
-            ((offset_ms / 1000.0) * f64::from(audio.sample_rate)).round() as i64;
+        let offset_frames = ((offset_ms / 1000.0) * f64::from(audio.sample_rate)).round() as i64;
         Self {
             audio,
             offset_frames,
@@ -82,7 +81,9 @@ impl SongTracks {
     ) -> Self {
         let inst_frames = inst.as_ref().map_or(0, |t| t.audio.frames as u64);
         let pv_frames = player_vocals.as_ref().map_or(0, |t| t.audio.frames as u64);
-        let ov_frames = opponent_vocals.as_ref().map_or(0, |t| t.audio.frames as u64);
+        let ov_frames = opponent_vocals
+            .as_ref()
+            .map_or(0, |t| t.audio.frames as u64);
         let duration_frames = inst_frames.max(pv_frames).max(ov_frames);
         Self {
             inst,
@@ -300,9 +301,11 @@ impl MixerState {
         }
 
         if transport_reset {
-            self.clock.bump_generation(self.song_cursor_frames, self.is_playing);
+            self.clock
+                .bump_generation(self.song_cursor_frames, self.is_playing);
         } else {
-            self.clock.store_state(self.song_cursor_frames, self.is_playing);
+            self.clock
+                .store_state(self.song_cursor_frames, self.is_playing);
         }
     }
 
@@ -458,10 +461,8 @@ mod tests {
         let mut mixer = MixerState::new(cmd_rx, retired_tx, shared.clone());
 
         let inst = DecodedAudio::from_stereo_pcm(vec![0.25; 8], 48_000);
-        let vocals = DecodedAudio::from_stereo_pcm(
-            vec![0.5, -0.5, 0.5, -0.5, 0.5, -0.5, 0.5, -0.5],
-            48_000,
-        );
+        let vocals =
+            DecodedAudio::from_stereo_pcm(vec![0.5, -0.5, 0.5, -0.5, 0.5, -0.5, 0.5, -0.5], 48_000);
 
         let song = SongTracks::new(
             Some(TrackStem::new(inst, 0.0)),
@@ -486,14 +487,18 @@ mod tests {
 
         // Mute player vocals and trigger SFX.
         let sfx = DecodedAudio::from_stereo_pcm(vec![0.1, 0.2, 0.1, 0.2], 48_000);
-        cmd_tx.push(AudioCommand::RegisterSfxBank(Box::new(vec![sfx]))).unwrap();
+        cmd_tx
+            .push(AudioCommand::RegisterSfxBank(Box::new(vec![sfx])))
+            .unwrap();
         cmd_tx
             .push(AudioCommand::SetTrackGain {
                 track: TrackKind::PlayerVocals,
                 gain: 0.0,
             })
             .unwrap();
-        cmd_tx.push(AudioCommand::PlaySfx { slot: 0, gain: 1.0 }).unwrap();
+        cmd_tx
+            .push(AudioCommand::PlaySfx { slot: 0, gain: 1.0 })
+            .unwrap();
 
         mixer.render(&mut out, 2);
         assert!((out[0] - 0.35).abs() < 1e-6);

@@ -42,7 +42,8 @@ impl SampleClockShared {
     /// Sets playback speed multiplier (`1.0` = normal speed).
     #[inline]
     pub fn set_playback_rate(&self, rate: f32) {
-        self.playback_rate_bits.store(rate.max(0.01).to_bits(), Ordering::Release);
+        self.playback_rate_bits
+            .store(rate.max(0.01).to_bits(), Ordering::Release);
     }
 
     /// Returns device output sample rate in Hz.
@@ -129,8 +130,8 @@ impl SampleClock {
     #[must_use]
     pub fn position_ms_at(&mut self, at: Instant) -> f64 {
         self.sync_anchor();
-        let base_ms = (self.last_frames as f64 / f64::from(self.shared.sample_rate().max(1)))
-            * 1000.0;
+        let base_ms =
+            (self.last_frames as f64 / f64::from(self.shared.sample_rate().max(1))) * 1000.0;
         if !self.shared.is_playing() {
             return base_ms;
         }
