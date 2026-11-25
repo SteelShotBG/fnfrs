@@ -78,20 +78,54 @@ pub fn push_sparrow_frame(
         flags |= SPRITE_FLAG_PIXEL_SNAP;
     }
 
-    // Inset UVs by 0.5 texels on linear-sampled atlases so 0px-padded Sparrow
-    // subtextures never bleed neighbor edge pixels at quad boundaries.
+    // Inset UVs by 1.0 texel on internal atlas edges for linear-sampled sheets
+    // so 0px-padded Sparrow subtextures never bleed neighbor edge pixels at
+    // sub-1.0 scale (e.g. 0.7x) under bilinear filtering or FP32/sub-texel rounding.
     let inset_px = if matches!(params.filter, FilterMode::Linear) {
-        0.5
+        1.0
     } else {
         0.0
     };
     let inst = SpriteInstance::new([draw_x, draw_y], [draw_w, draw_h])
-        .with_uv_rect(frame.uv_bounds_inset(params.tex_size[0], params.tex_size[1], inset_px))
+        .with_uv_rect(internal_edge_uv_bounds(
+            frame,
+            params.tex_size[0],
+            params.tex_size[1],
+            inset_px,
+        ))
         .with_color(params.color)
         .with_hsv_shift(params.hsv_shift)
         .with_flags(flags);
 
     batcher.push(params.texture, params.blend, params.filter, inst);
+}
+
+#[inline]
+fn internal_edge_uv_bounds(
+    frame: &AtlasFrame,
+    tex_w: f32,
+    tex_h: f32,
+    inset_px: f32,
+) -> [f32; 4] {
+    if tex_w <= 0.0 || tex_h <= 0.0 {
+        return [0.0, 0.0, 1.0, 1.0];
+    }
+    let max_ix = (frame.width as f32 * 0.5 - 0.01).max(0.0);
+    let max_iy = (frame.height as f32 * 0.5 - 0.01).max(0.0);
+    let ix = inset_px.clamp(0.0, max_ix);
+    let iy = inset_px.clamp(0.0, max_iy);
+
+    let x0 = frame.x as f32;
+    let y0 = frame.y as f32;
+    let x1 = x0 + frame.width as f32;
+    let y1 = y0 + frame.height as f32;
+
+    let left = if frame.x > 0 { x0 + ix } else { x0 };
+    let top = if frame.y > 0 { y0 + iy } else { y0 };
+    let right = if x1 < tex_w { x1 - ix } else { x1 };
+    let bottom = if y1 < tex_h { y1 - iy } else { y1 };
+
+    [left / tex_w, top / tex_h, right / tex_w, bottom / tex_h]
 }
 
 /// Pre-indexed GPU textures and animation frames for a V-Slice `NoteStyle`.
@@ -540,5 +574,48 @@ mod tests {
         assert!((uv[1] - (242.0 / 591.0)).abs() < 1e-6);
         assert!((uv[2] - (515.0 / 599.0)).abs() < 1e-6);
         assert!((uv[3] - (380.0 / 591.0)).abs() < 1e-6);
+    }
+
+    #[test]
+    fn internal_edge_uv_bounds_skips_sheet_outer_edges() {
+        let corner_frame = AtlasFrame {
+            name: "noteDown0001".to_owned(),
+            x: 0,
+            y: 0,
+            width: 157,
+            height: 154,
+            frame_x: 0.0,
+            frame_y: 0.0,
+            frame_width: 157.0,
+            frame_height: 154.0,
+            rotated: false,
+            flip_x: false,
+            flip_y: false,
+        };
+        let uv_corner = internal_edge_uv_bounds(&corner_frame, 311.0, 311.0, 1.0);
+        assert!((uv_corner[0] - 0.0).abs() < 1e-6);
+        assert!((uv_corner[1] - 0.0).abs() < 1e-6);
+        assert!((uv_corner[2] - (156.0 / 311.0)).abs() < 1e-6);
+        assert!((uv_corner[3] - (153.0 / 311.0)).abs() < 1e-6);
+
+        let interior_frame = AtlasFrame {
+            name: "staticDown0001".to_owned(),
+            x: 1159,
+            y: 10,
+            width: 157,
+            height: 154,
+            frame_x: 0.0,
+            frame_y: 0.0,
+            frame_width: 157.0,
+            frame_height: 154.0,
+            rotated: false,
+            flip_x: false,
+            flip_y: false,
+        };
+        let uv_int = internal_edge_uv_bounds(&interior_frame, 2019.0, 810.0, 1.0);
+        assert!((uv_int[0] - (1160.0 / 2019.0)).abs() < 1e-6);
+        assert!((uv_int[1] - (11.0 / 810.0)).abs() < 1e-6);
+        assert!((uv_int[2] - (1315.0 / 2019.0)).abs() < 1e-6);
+        assert!((uv_int[3] - (163.0 / 810.0)).abs() < 1e-6);
     }
 }

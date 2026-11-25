@@ -6,7 +6,8 @@ use std::time::Instant;
 use anyhow::Result;
 use fnfrs_audio::{decode_file, AudioEngine, SongTracks, TrackStem};
 use fnfrs_core::constants::{
-    DEFAULT_DIFFICULTY, DEFAULT_NOTE_STYLE, VIRTUAL_HEIGHT, VIRTUAL_WIDTH,
+    DEFAULT_CHARACTER, DEFAULT_DIFFICULTY, DEFAULT_NOTE_STYLE, DEFAULT_VARIATION, VIRTUAL_HEIGHT,
+    VIRTUAL_WIDTH,
 };
 use fnfrs_core::paths::AssetLocator;
 use fnfrs_core::schema::song::{SongChartData, SongMetadata, SongNoteData};
@@ -25,9 +26,12 @@ use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{Window, WindowId};
 
 struct LoadedChart {
+    song_id: String,
+    difficulty: String,
+    variation: Option<String>,
     metadata: Option<SongMetadata>,
     chart: Option<SongChartData>,
-    label: StackTextBuffer<64>,
+    label: StackTextBuffer<96>,
 }
 
 struct RuntimeState {
@@ -53,7 +57,7 @@ struct RuntimeState {
     last_frame_time: Instant,
     frame_count: u64,
 
-    header_buf: StackTextBuffer<128>,
+    header_buf: StackTextBuffer<160>,
     fps_buf: StackTextBuffer<64>,
 }
 
@@ -63,14 +67,30 @@ struct App {
     loaded_chart: LoadedChart,
     sfx_slots: GameplaySfxSlots,
     has_song_audio: bool,
-    header_buf: StackTextBuffer<128>,
+    header_buf: StackTextBuffer<160>,
     state: Option<RuntimeState>,
 }
 
 impl App {
     fn new() -> Self {
+        let mut args = std::env::args().skip(1);
+        let song_id = args
+            .next()
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_ascii_lowercase())
+            .unwrap_or_else(|| "bopeebo".to_owned());
+        let difficulty = args
+            .next()
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_ascii_lowercase())
+            .unwrap_or_else(|| DEFAULT_DIFFICULTY.to_owned());
+        let variation = args
+            .next()
+            .filter(|s| !s.is_empty() && !s.eq_ignore_ascii_case(DEFAULT_VARIATION))
+            .map(|s| s.to_ascii_lowercase());
+
         let assets = AssetLocator::discover_or_default();
-        let mut header_buf = StackTextBuffer::<128>::new();
+        let mut header_buf = StackTextBuffer::<160>::new();
 
         let mut audio = match AudioEngine::try_new() {
             Ok(engine) => Some(engine),
@@ -80,7 +100,8 @@ impl App {
             }
         };
 
-        let loaded_chart = load_bopeebo_chart(&assets);
+        let loaded_chart =
+            load_song_chart(&assets, &song_id, &difficulty, variation.as_deref());
         let mut sfx_slots = GameplaySfxSlots::default();
         let mut has_song_audio = false;
 
@@ -89,12 +110,8 @@ impl App {
             sfx_slots = load_miss_sfx(&assets, engine, sample_rate);
 
             if loaded_chart.chart.is_some() {
-                has_song_audio = try_start_bopeebo_audio(
-                    &assets,
-                    engine,
-                    sample_rate,
-                    loaded_chart.metadata.as_ref(),
-                );
+                has_song_audio =
+                    try_start_song_audio(&assets, engine, sample_rate, &loaded_chart);
             }
 
             let _ = write!(
@@ -137,8 +154,9 @@ impl ApplicationHandler for App {
             return;
         }
 
+        let title = format!("fnfrs — {}", self.loaded_chart.label.as_str());
         let attrs = Window::default_attributes()
-            .with_title("fnfrs — Friday Night Funkin' (Rust V-Slice)")
+            .with_title(title)
             .with_inner_size(LogicalSize::new(VIRTUAL_WIDTH, VIRTUAL_HEIGHT));
 
         let window = match event_loop.create_window(attrs) {
@@ -164,8 +182,14 @@ impl ApplicationHandler for App {
         let mesh_batcher = MeshBatcher::new(&gpu, 2048, 4096);
         let (hud_font, hud_font_tex) = load_hud_font(&self.assets, &mut gpu, event_loop);
 
-        let note_assets =
-            NoteStyleAssets::load_from_assets(&self.assets, &mut gpu, DEFAULT_NOTE_STYLE);
+        let note_style_id = self
+            .loaded_chart
+            .metadata
+            .as_ref()
+            .map(|m| m.play_data.note_style.as_str())
+            .filter(|s| !s.is_empty())
+            .unwrap_or(DEFAULT_NOTE_STYLE);
+        let note_assets = NoteStyleAssets::load_from_assets(&self.assets, &mut gpu, note_style_id);
         let visual_style = note_assets.to_visual_style(gpu.white_texture());
 
         let mut session = create_session(&self.loaded_chart, PlayConfig::default());
@@ -188,6 +212,9 @@ impl ApplicationHandler for App {
             session,
             inputs: InputQueue::default(),
             loaded_chart: LoadedChart {
+                song_id: self.loaded_chart.song_id.clone(),
+                difficulty: self.loaded_chart.difficulty.clone(),
+                variation: self.loaded_chart.variation.clone(),
                 metadata: self.loaded_chart.metadata.clone(),
                 chart: self.loaded_chart.chart.clone(),
                 label: self.loaded_chart.label.clone(),
@@ -373,7 +400,7 @@ fn render_game_frame(
     let debug_scale = if state.hud_font.line_height() <= 10.0 {
         1.5
     } else {
-        0.9
+        1.0
     };
     let info_style = TextStyle {
         scale: debug_scale,
@@ -484,18 +511,33 @@ fn render_game_frame(
     state.gpu.queue.present(frame);
 }
 
-fn load_bopeebo_chart(assets: &AssetLocator) -> LoadedChart {
-    let mut label = StackTextBuffer::<64>::new();
-    let meta_path = assets.song_metadata("bopeebo", None);
-    let chart_path = assets.song_chart("bopeebo", None);
+fn load_song_chart(
+    assets: &AssetLocator,
+    song_id: &str,
+    difficulty: &str,
+    requested_variation: Option<&str>,
+) -> LoadedChart {
+    let mut label = StackTextBuffer::<96>::new();
+    let effective_var = assets.resolve_song_variation(song_id, difficulty, requested_variation);
+    let meta_path = assets.song_metadata(song_id, effective_var.as_deref());
+    let chart_path = assets.song_chart(song_id, effective_var.as_deref());
 
-    if let (Ok(meta_raw), Ok(chart_raw)) = (fs::read_to_string(&meta_path), fs::read_to_string(&chart_path)) {
+    if let (Ok(meta_raw), Ok(chart_raw)) =
+        (fs::read_to_string(&meta_path), fs::read_to_string(&chart_path))
+    {
         if let (Ok(meta), Ok(chart)) = (
             serde_json::from_str::<SongMetadata>(&meta_raw),
             serde_json::from_str::<SongChartData>(&chart_raw),
         ) {
-            let _ = write!(label, "{} [{}]", meta.song_name, DEFAULT_DIFFICULTY);
+            if let Some(var) = effective_var.as_deref() {
+                let _ = write!(label, "{song_id} [{difficulty}] ({var})");
+            } else {
+                let _ = write!(label, "{song_id} [{difficulty}]");
+            }
             return LoadedChart {
+                song_id: song_id.to_owned(),
+                difficulty: difficulty.to_owned(),
+                variation: effective_var,
                 metadata: Some(meta),
                 chart: Some(chart),
                 label,
@@ -505,6 +547,9 @@ fn load_bopeebo_chart(assets: &AssetLocator) -> LoadedChart {
 
     let _ = write!(label, "Demo Pattern (120 BPM)");
     LoadedChart {
+        song_id: song_id.to_owned(),
+        difficulty: difficulty.to_owned(),
+        variation: effective_var,
         metadata: None,
         chart: None,
         label,
@@ -528,27 +573,61 @@ fn load_miss_sfx(assets: &AssetLocator, engine: &mut AudioEngine, sample_rate: u
     slots
 }
 
-fn try_start_bopeebo_audio(
+fn try_start_song_audio(
     assets: &AssetLocator,
     engine: &mut AudioEngine,
     sample_rate: u32,
-    metadata: Option<&SongMetadata>,
+    loaded: &LoadedChart,
 ) -> bool {
-    let inst_path = assets.song_inst("bopeebo", "");
+    let metadata = loaded.metadata.as_ref();
+    let song_id = loaded.song_id.as_str();
+    let variation = loaded.variation.as_deref();
+
+    let inst_path = assets.resolve_song_inst(song_id, metadata, variation);
     let Ok(inst_audio) = decode_file(&inst_path, sample_rate) else {
         return false;
     };
 
-    let inst_offset = metadata.map_or(0.0, |m| m.offsets.get_instrumental_offset(None));
-    let pv_offset = metadata.map_or(0.0, |m| m.offsets.get_vocal_offset("bf", None));
-    let ov_offset = metadata.map_or(0.0, |m| m.offsets.get_vocal_offset("dad", None));
+    let inst_override = metadata
+        .map(|m| m.play_data.characters.instrumental.trim())
+        .filter(|s| !s.is_empty());
 
-    let player_vocals = decode_file(&assets.song_voices("bopeebo", "-bf"), sample_rate)
-        .ok()
+    let player_char = metadata
+        .map(|m| m.play_data.characters.player.trim())
+        .filter(|s| !s.is_empty())
+        .unwrap_or(DEFAULT_CHARACTER);
+    let opponent_char = metadata
+        .map(|m| m.play_data.characters.opponent.trim())
+        .filter(|s| !s.is_empty())
+        .unwrap_or("dad");
+
+    let inst_offset = metadata.map_or(0.0, |m| m.offsets.get_instrumental_offset(inst_override));
+    let pv_offset = metadata.map_or(0.0, |m| {
+        m.offsets.get_vocal_offset(player_char, inst_override)
+    });
+    let ov_offset = metadata.map_or(0.0, |m| {
+        m.offsets.get_vocal_offset(opponent_char, inst_override)
+    });
+
+    let player_vocals_list = metadata.and_then(|m| m.play_data.characters.player_vocals.as_deref());
+    let opponent_vocals_list =
+        metadata.and_then(|m| m.play_data.characters.opponent_vocals.as_deref());
+
+    let mut player_vocals = assets
+        .resolve_song_voices_for(song_id, player_vocals_list, player_char, variation)
+        .and_then(|p| decode_file(&p, sample_rate).ok())
         .map(|a| TrackStem::new(a, pv_offset));
-    let opponent_vocals = decode_file(&assets.song_voices("bopeebo", "-dad"), sample_rate)
-        .ok()
+    let opponent_vocals = assets
+        .resolve_song_voices_for(song_id, opponent_vocals_list, opponent_char, variation)
+        .and_then(|p| decode_file(&p, sample_rate).ok())
         .map(|a| TrackStem::new(a, ov_offset));
+
+    if player_vocals.is_none() && opponent_vocals.is_none() {
+        player_vocals = assets
+            .resolve_song_voices_fallback(song_id, variation)
+            .and_then(|p| decode_file(&p, sample_rate).ok())
+            .map(|a| TrackStem::new(a, pv_offset));
+    }
 
     let tracks = SongTracks::new(
         Some(TrackStem::new(inst_audio, inst_offset)),
@@ -561,7 +640,7 @@ fn try_start_bopeebo_audio(
 
 fn create_session(loaded: &LoadedChart, config: PlayConfig) -> PlaySession {
     if let (Some(meta), Some(chart)) = (&loaded.metadata, &loaded.chart) {
-        return PlaySession::new(meta, chart, DEFAULT_DIFFICULTY, config);
+        return PlaySession::new(meta, chart, &loaded.difficulty, config);
     }
 
     let mut player_notes = Vec::new();
@@ -596,15 +675,10 @@ fn load_hud_font(
     let fnt_path = assets.font("vcr-bmp.fnt");
     let png_path = assets.font("vcr-bmp.png");
     if let (Ok(fnt_str), Ok(png_bytes)) = (fs::read_to_string(&fnt_path), fs::read(&png_path)) {
-        if let Ok(tex) = gpu.from_png_bytes(Some("vcr-bmp"), &png_bytes) {
-            let size = gpu.texture_size(tex);
-            if let Ok(font) = BitmapFont::from_bmfont(
-                &fnt_str,
-                size.map(|(w, _)| w),
-                size.map(|(_, h)| h),
-            ) {
-                return (font, tex);
-            }
+        if let Ok(pair) =
+            BitmapFont::create_bmfont_on_gpu(gpu, Some("vcr-bmp"), &fnt_str, &png_bytes, true)
+        {
+            return pair;
         }
     }
 
