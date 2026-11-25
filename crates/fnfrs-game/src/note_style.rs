@@ -18,7 +18,7 @@ use crate::input::NoteDirection;
 use crate::strumline::StrumlineVisualStyle;
 
 /// Loaded GPU texture + parsed SparrowV2 atlas pair.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct LoadedSparrow {
     pub texture: TextureHandle,
     pub tex_size: [f32; 2],
