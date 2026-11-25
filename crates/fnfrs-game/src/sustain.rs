@@ -397,6 +397,7 @@ mod tests {
 
         let long = compute_hold_drop_penalty(1000.0, true);
         assert!(long.should_penalize);
+        // V-Slice Constants.hx sets HEALTH_HOLD_DROP_PENALTY_PER_SECOND to 0.0.
         assert!(long.health_change.abs() < 1e-6);
         assert!((long.score_change - (-125.0)).abs() < 1e-6);
     }
