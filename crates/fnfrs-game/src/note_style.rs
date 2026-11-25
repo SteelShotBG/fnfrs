@@ -267,7 +267,7 @@ impl NoteStyleAssets {
                     }
                     if let Some(hitbox_frame) = sparrow
                         .atlas
-                        .frames
+                        .frames()
                         .first()
                         .or_else(|| out.strum_static[0].first())
                     {
