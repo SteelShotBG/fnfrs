@@ -94,6 +94,34 @@ impl AtlasFrame {
         ]
     }
 
+    /// Computes normalized UV bounds `[u0, v0, u1, v1]` for `SpriteInstance::uv_rect`.
+    /// Returns `[0.0, 0.0, 1.0, 1.0]` if either texture dimension is non-positive.
+    #[inline]
+    #[must_use]
+    pub fn uv_bounds(&self, tex_w: f32, tex_h: f32) -> [f32; 4] {
+        if tex_w <= 0.0 || tex_h <= 0.0 {
+            return [0.0, 0.0, 1.0, 1.0];
+        }
+        [
+            self.x as f32 / tex_w,
+            self.y as f32 / tex_h,
+            (self.x + self.width) as f32 / tex_w,
+            (self.y + self.height) as f32 / tex_h,
+        ]
+    }
+
+    /// Trimmed dimensions `[width, height]` in upright sprite space (swapping
+    /// atlas `width`/`height` when `self.rotated` is `true`).
+    #[inline]
+    #[must_use]
+    pub fn upright_trimmed_size(&self) -> [f32; 2] {
+        if self.rotated {
+            [self.height as f32, self.width as f32]
+        } else {
+            [self.width as f32, self.height as f32]
+        }
+    }
+
     /// Logical untrimmed frame dimensions `[width, height]`.
     #[inline]
     #[must_use]

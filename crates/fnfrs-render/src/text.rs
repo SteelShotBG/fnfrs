@@ -958,6 +958,27 @@ impl BitmapFont {
         });
     }
 
+    /// Queues a stack-formatted byte slice directly into `batcher` with a 1px
+    /// outline (`FlxBitmapText` `OUTLINE` style) and zero heap allocations.
+    pub fn draw_bytes_outlined(
+        &self,
+        batcher: &mut SpriteBatcher,
+        texture: TextureHandle,
+        bytes: &[u8],
+        pos: [f32; 2],
+        style: &TextStyle,
+        outline_color: [f32; 4],
+    ) {
+        let mut outline_style = *style;
+        outline_style.color = outline_color;
+        outline_style.color[3] *= style.color[3];
+        const OFFSETS: [[f32; 2]; 4] = [[-1.0, 0.0], [1.0, 0.0], [0.0, -1.0], [0.0, 1.0]];
+        for off in OFFSETS {
+            self.draw_bytes(batcher, texture, bytes, pos[0] + off[0], pos[1] + off[1], &outline_style);
+        }
+        self.draw_bytes(batcher, texture, bytes, pos[0], pos[1], style);
+    }
+
     /// Queues a `&str` directly into `batcher` using `FilterMode::Nearest` and
     /// `BlendMode::Normal` with zero heap allocations.
     #[inline]

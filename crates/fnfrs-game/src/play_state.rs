@@ -21,6 +21,7 @@ use fnfrs_core::scoring::{
 use fnfrs_render::{BitmapFont, MeshBatcher, SpriteBatcher, TextAlign, TextStyle, TextureHandle};
 
 use crate::input::{compute_note_diff_ms, InputQueue, NoteDirection};
+use crate::note_style::NoteStyleAssets;
 use crate::popup::PopUpPool;
 use crate::strumline::{Strumline, StrumlineVisualStyle};
 use crate::sustain::compute_hold_drop_penalty;
@@ -647,19 +648,21 @@ impl PlaySession {
 
     /// Queues strumlines, popups, health bar, and HUD text into `sprite_batcher` &
     /// `mesh_batcher` with zero heap allocations.
+    #[allow(clippy::too_many_arguments)]
     pub fn draw(
         &self,
         sprite_batcher: &mut SpriteBatcher,
         mesh_batcher: &mut MeshBatcher,
         style: &StrumlineVisualStyle,
+        note_assets: Option<&NoteStyleAssets>,
         font: &BitmapFont,
         font_tex: TextureHandle,
     ) {
         let song_pos = self.conductor.song_position_ms;
         self.opponent_strumline
-            .draw(sprite_batcher, mesh_batcher, style, song_pos);
+            .draw(sprite_batcher, mesh_batcher, style, note_assets, song_pos);
         self.player_strumline
-            .draw(sprite_batcher, mesh_batcher, style, song_pos);
+            .draw(sprite_batcher, mesh_batcher, style, note_assets, song_pos);
 
         // Judgement & combo popups.
         for (_, rating) in self.popups.ratings.iter_alive() {
@@ -670,85 +673,103 @@ impl PlaySession {
                 Judgement::Shit => ("SHIT", [0.85, 0.30, 0.30, rating.alpha]),
                 Judgement::Miss => ("MISS", [0.75, 0.15, 0.20, rating.alpha]),
             };
-            font.draw_str(
+            font.draw_bytes_outlined(
                 sprite_batcher,
                 font_tex,
-                label,
-                rating.x + 80.0,
-                rating.y + 30.0,
+                label.as_bytes(),
+                [rating.x + 80.0, rating.y + 30.0],
                 &TextStyle {
-                    scale: 4.0,
+                    scale: if font.line_height() <= 10.0 { 4.0 } else { 2.0 },
                     color,
                     ..Default::default()
                 },
+                [0.0, 0.0, 0.0, 1.0],
             );
         }
 
         let mut digit_byte = [b'0'; 1];
         for (_, digit) in self.popups.digits.iter_alive() {
             digit_byte[0] = b'0' + (digit.digit % 10);
-            font.draw_bytes(
+            font.draw_bytes_outlined(
                 sprite_batcher,
                 font_tex,
                 &digit_byte,
-                digit.x,
-                digit.y,
+                [digit.x, digit.y],
                 &TextStyle {
-                    scale: 3.5,
+                    scale: if font.line_height() <= 10.0 { 3.5 } else { 1.75 },
                     color: [1.0, 1.0, 1.0, digit.alpha],
                     ..Default::default()
                 },
+                [0.0, 0.0, 0.0, 1.0],
             );
         }
 
-        // Minimal V-Slice health bar + HUD score line.
-        let bar_w = 593.0;
-        let bar_h = 11.0;
-        let bar_x = (VIRTUAL_WIDTH - bar_w) * 0.5;
-        let bar_y = if self.config.is_downscroll {
-            VIRTUAL_HEIGHT * 0.10
+        // V-Slice health bar (`PlayState.initHealthBar`, `Constants.COLOR_HEALTH_BAR_*`).
+        let (bg_w, bg_h) = note_assets
+            .and_then(|na| na.health_bar_tex)
+            .map_or((601.0, 19.0), |(_, sz)| (sz[0], sz[1]));
+        let bar_bg_x = (VIRTUAL_WIDTH - bg_w) * 0.5;
+        let bar_bg_y = if self.config.is_downscroll {
+            VIRTUAL_HEIGHT * 0.1
         } else {
-            VIRTUAL_HEIGHT * 0.89
+            VIRTUAL_HEIGHT * 0.9
         };
+        let bar_x = bar_bg_x + 4.0;
+        let bar_y = bar_bg_y + 4.0;
+        let bar_w = (bg_w - 8.0).max(1.0);
+        let bar_h = (bg_h - 8.0).max(1.0);
+
         let player_ratio = (self.health_lerp / HEALTH_MAX).clamp(0.0, 1.0);
         let split_x = bar_w * (1.0 - player_ratio);
 
-        sprite_batcher.push(
-            style.white_texture,
-            fnfrs_render::BlendMode::Normal,
-            fnfrs_render::FilterMode::Nearest,
-            fnfrs_render::SpriteInstance::new([bar_x - 4.0, bar_y - 4.0], [bar_w + 8.0, bar_h + 8.0])
-                .with_color([0.0, 0.0, 0.0, 1.0]),
-        );
-        // Opponent left fill (purple), player right fill (cyan/green).
+        if let Some((hb_tex, _)) = note_assets.and_then(|na| na.health_bar_tex) {
+            sprite_batcher.push(
+                hb_tex,
+                fnfrs_render::BlendMode::Normal,
+                fnfrs_render::FilterMode::Linear,
+                fnfrs_render::SpriteInstance::new([bar_bg_x, bar_bg_y], [bg_w, bg_h]),
+            );
+        } else {
+            sprite_batcher.push(
+                style.white_texture,
+                fnfrs_render::BlendMode::Normal,
+                fnfrs_render::FilterMode::Nearest,
+                fnfrs_render::SpriteInstance::new([bar_bg_x, bar_bg_y], [bg_w, bg_h])
+                    .with_color([0.0, 0.0, 0.0, 1.0]),
+            );
+        }
+
+        // Opponent left fill (`#FF0000`), player right fill (`#66FF33`).
         sprite_batcher.push(
             style.white_texture,
             fnfrs_render::BlendMode::Normal,
             fnfrs_render::FilterMode::Nearest,
             fnfrs_render::SpriteInstance::new([bar_x, bar_y], [split_x, bar_h])
-                .with_color([0.69, 0.40, 0.81, 1.0]),
+                .with_color([1.0, 0.0, 0.0, 1.0]),
         );
         sprite_batcher.push(
             style.white_texture,
             fnfrs_render::BlendMode::Normal,
             fnfrs_render::FilterMode::Nearest,
             fnfrs_render::SpriteInstance::new([bar_x + split_x, bar_y], [bar_w - split_x, bar_h])
-                .with_color([0.19, 0.69, 0.82, 1.0]),
+                .with_color([0.4, 1.0, 0.2, 1.0]),
         );
 
+        let score_scale = if font.line_height() <= 10.0 { 2.0 } else { 1.0 };
         let hud_style = TextStyle {
-            scale: 2.0,
+            scale: score_scale,
             color: [1.0, 1.0, 1.0, 1.0],
-            align: TextAlign::Right,
+            align: TextAlign::Left,
+            letter_spacing: -1.0,
             ..Default::default()
         };
-        font.draw_bytes(
+        font.draw_bytes_outlined(
             sprite_batcher,
             font_tex,
             self.score_text_bytes(),
-            bar_x + bar_w - 40.0,
-            bar_y + 24.0,
+            [bar_bg_x + bg_w - 190.0, bar_bg_y + 30.0],
             &hud_style,
+            [0.0, 0.0, 0.0, 1.0],
         );
     }
 }

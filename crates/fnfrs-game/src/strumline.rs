@@ -3,8 +3,8 @@
 //! `NoteSprite.hx`, `NoteSplash.hx`).
 
 use fnfrs_core::constants::{
-    GHOST_TAP_DELAY, HIT_WINDOW_MS, INITIAL_OFFSET, KEY_COUNT, NOTE_SPACING, NOTE_SPLASH_CAP,
-    PIXELS_PER_MS, STRUMLINE_SIZE, VIRTUAL_HEIGHT,
+    GHOST_TAP_DELAY, HIT_WINDOW_MS, KEY_COUNT, NOTE_SPACING, NOTE_SPLASH_CAP, PIXELS_PER_MS,
+    STRUMLINE_SIZE, VIRTUAL_HEIGHT,
 };
 use fnfrs_core::pool::{FixedPool, PoolHandle};
 use fnfrs_core::schema::song::SongNoteData;
@@ -14,7 +14,8 @@ use fnfrs_render::{
 use winit::keyboard::KeyCode;
 
 use crate::input::{HeldKeys, NoteDirection};
-use crate::sustain::{advance_hold_covers, NoteHoldCoverState, SustainTrailState};
+use crate::note_style::{push_sparrow_frame, NoteStyleAssets, SparrowDrawParams};
+use crate::sustain::{advance_hold_covers, HoldCoverPhase, NoteHoldCoverState, SustainTrailState};
 
 /// Default pre-allocated pool size per strumline for visible note heads.
 pub const NOTE_POOL_CAPACITY: usize = 256;
@@ -211,6 +212,10 @@ pub struct StrumlineVisualStyle {
     pub hold_offsets: [f32; 2],
     pub is_pixel: bool,
     pub show_splashes: bool,
+    pub use_sparrow_offsets: bool,
+    pub visual_initial_offset: f32,
+    pub note_nudge: f32,
+    pub cover_hitbox: [f32; 2],
     pub confirm_frames: usize,
     pub splash_frames: usize,
     pub cover_start_frames: usize,
@@ -231,6 +236,10 @@ impl StrumlineVisualStyle {
             hold_offsets: [0.0, 0.0],
             is_pixel: false,
             show_splashes: true,
+            use_sparrow_offsets: false,
+            visual_initial_offset: 0.0,
+            note_nudge: 0.0,
+            cover_hitbox: [300.0, 400.0],
             confirm_frames: 4,
             splash_frames: 4,
             cover_start_frames: 3,
@@ -556,8 +565,8 @@ impl Strumline {
             }
         };
 
-        let sx = self.x + self.get_x_pos(dir) + INITIAL_OFFSET;
-        let sy = self.y - INITIAL_OFFSET;
+        let sx = self.x + self.get_x_pos(dir);
+        let sy = self.y;
         let variant = self.next_splash_variant;
         self.next_splash_variant = self.next_splash_variant.wrapping_add(1);
 
@@ -579,16 +588,12 @@ impl Strumline {
         if !self.show_notesplash || !enabled {
             return;
         }
-        let Some((dir, hold_w)) = self
-            .holds
-            .get(hold_handle)
-            .map(|h| (h.direction, h.graphic_width))
-        else {
+        let Some(dir) = self.holds.get(hold_handle).map(|h| h.direction) else {
             return;
         };
 
-        let cx = self.x + self.get_x_pos(dir) + STRUMLINE_SIZE * 0.5 - hold_w * 0.5 - 12.0;
-        let cy = self.y + INITIAL_OFFSET + STRUMLINE_SIZE * 0.5 - 96.0;
+        let cx = self.x + self.get_x_pos(dir);
+        let cy = self.y;
 
         let Some((cover_h, cover)) = self.covers.acquire() else {
             return;
@@ -690,7 +695,7 @@ impl Strumline {
         let mut kill_notes_len = 0usize;
 
         for (handle, note) in self.notes.iter_alive_mut() {
-            note.y = self.y
+            note.y = self.y - style.visual_initial_offset
                 + Self::get_note_y(
                     note.strum_time_ms,
                     self.scroll_speed,
@@ -830,6 +835,7 @@ impl Strumline {
 
             hold.y = hold.compute_screen_y(
                 self.y,
+                style.visual_initial_offset,
                 self.scroll_speed,
                 self.is_downscroll,
                 song_position_ms,
@@ -895,6 +901,7 @@ impl Strumline {
         sprite_batcher: &mut SpriteBatcher,
         mesh_batcher: &mut MeshBatcher,
         style: &StrumlineVisualStyle,
+        note_assets: Option<&NoteStyleAssets>,
         song_position_ms: f64,
     ) {
         let filter = if style.is_pixel {
@@ -902,7 +909,7 @@ impl Strumline {
         } else {
             FilterMode::Linear
         };
-        let note_tex = style.note_texture.unwrap_or(style.white_texture);
+        let fallback_tex = style.note_texture.unwrap_or(style.white_texture);
 
         // 0. Optional strumline lane background.
         if self.strumline_bg_alpha > 0.0 {
@@ -920,7 +927,56 @@ impl Strumline {
         }
 
         // 1. Receptors.
+        let sparrow_strum = note_assets.filter(|na| na.has_sparrow_strum());
         for receptor in &self.receptors {
+            if let Some(na) = sparrow_strum {
+                if let Some((tex, tex_size)) = na.strum_tex {
+                    let lane = receptor.direction.as_index();
+                    let frames = match receptor.anim {
+                        ReceptorAnim::Static => &na.strum_static[lane],
+                        ReceptorAnim::Press => &na.strum_press[lane],
+                        ReceptorAnim::Confirm => &na.strum_confirm[lane],
+                        ReceptorAnim::ConfirmHold => {
+                            if na.strum_confirm_hold[lane].is_empty() {
+                                &na.strum_confirm[lane]
+                            } else {
+                                &na.strum_confirm_hold[lane]
+                            }
+                        }
+                    };
+                    if let Some(frame) = frames
+                        .get(receptor.anim_frame % frames.len().max(1))
+                        .or_else(|| frames.first())
+                    {
+                        let params = SparrowDrawParams {
+                            texture: tex,
+                            tex_size,
+                            pos: [
+                                receptor.x + style.visual_initial_offset + na.strum_offsets[0],
+                                receptor.y + na.strum_offsets[1],
+                            ],
+                            scale: na.strum_scale * self.scale,
+                            hitbox_size: [
+                                na.strum_hitbox[0] * self.scale,
+                                na.strum_hitbox[1] * self.scale,
+                            ],
+                            extra_offset: [0.0, 0.0],
+                            color: [1.0, 1.0, 1.0, receptor.alpha],
+                            hsv_shift: [0.0; 3],
+                            blend: BlendMode::Normal,
+                            filter: if na.strum_pixel {
+                                FilterMode::Nearest
+                            } else {
+                                FilterMode::Linear
+                            },
+                            pixel_snap: false,
+                        };
+                        push_sparrow_frame(sprite_batcher, frame, &params);
+                        continue;
+                    }
+                }
+            }
+
             let base = StrumlineVisualStyle::lane_color(receptor.direction);
             let (size, color, pos_offset) = match receptor.anim {
                 ReceptorAnim::Static => (
@@ -940,7 +996,7 @@ impl Strumline {
                 ),
             };
             sprite_batcher.push(
-                note_tex,
+                fallback_tex,
                 BlendMode::Normal,
                 filter,
                 SpriteInstance::new([receptor.x + pos_offset, receptor.y + pos_offset], [size, size])
@@ -975,11 +1031,12 @@ impl Strumline {
                 let base = StrumlineVisualStyle::lane_color(hold.direction);
                 let w = (STRUMLINE_SIZE * 0.28).max(12.0);
                 let cx = hold.x + (hold.graphic_width - w) * 0.5;
-                let bar_y = if !self.is_downscroll && hold.hit_note && song_position_ms > hold.strum_time_ms {
-                    self.y + STRUMLINE_SIZE * 0.5
-                } else {
-                    hold.y
-                };
+                let bar_y =
+                    if !self.is_downscroll && hold.hit_note && song_position_ms > hold.strum_time_ms {
+                        self.y - style.visual_initial_offset + STRUMLINE_SIZE * 0.5
+                    } else {
+                        hold.y
+                    };
                 sprite_batcher.push(
                     style.white_texture,
                     BlendMode::Normal,
@@ -991,20 +1048,57 @@ impl Strumline {
         }
 
         // 3. Note heads.
+        let sparrow_notes = note_assets.filter(|na| na.has_sparrow_notes());
         for (_, note) in self.notes.iter_alive() {
             if !note.visible || note.alpha <= 0.0 {
                 continue;
             }
+            if let Some(na) = sparrow_notes {
+                if let Some((tex, tex_size)) = na.note_tex {
+                    let lane = note.direction.as_index();
+                    if let Some(frame) = na.note_frames[lane].first() {
+                        let hitbox_w = na.note_hitbox[lane][0] * self.scale;
+                        let hitbox_h = na.note_hitbox[lane][1] * self.scale;
+                        let params = SparrowDrawParams {
+                            texture: tex,
+                            tex_size,
+                            pos: [
+                                note.x - (hitbox_w - STRUMLINE_SIZE) * 0.5 - style.note_nudge
+                                    + na.note_offsets[0],
+                                note.y + na.note_offsets[1],
+                            ],
+                            scale: na.note_scale * self.scale,
+                            hitbox_size: [hitbox_w, hitbox_h],
+                            extra_offset: [0.0, 0.0],
+                            color: [1.0, 1.0, 1.0, note.alpha],
+                            hsv_shift: if note.desaturated {
+                                [0.0, -0.8, 0.0]
+                            } else {
+                                [0.0; 3]
+                            },
+                            blend: BlendMode::Normal,
+                            filter: if na.note_pixel {
+                                FilterMode::Nearest
+                            } else {
+                                FilterMode::Linear
+                            },
+                            pixel_snap: false,
+                        };
+                        push_sparrow_frame(sprite_batcher, frame, &params);
+                        continue;
+                    }
+                }
+            }
+
             let base = StrumlineVisualStyle::lane_color(note.direction);
             let size = STRUMLINE_SIZE * 0.88 * self.scale;
             let pad = (STRUMLINE_SIZE - size) * 0.5;
             let mut inst = SpriteInstance::new([note.x + pad, note.y + pad], [size, size])
                 .with_color([base[0], base[1], base[2], note.alpha]);
             if note.desaturated {
-                // Desaturate missed notes (`hsv_shift.y = -0.8` scales S by 0.2).
                 inst = inst.with_hsv_shift([0.0, -0.8, 0.0]);
             }
-            sprite_batcher.push(note_tex, BlendMode::Normal, filter, inst);
+            sprite_batcher.push(fallback_tex, BlendMode::Normal, filter, inst);
         }
 
         // 4. Hold covers.
@@ -1012,24 +1106,106 @@ impl Strumline {
             if !cover.visible || cover.alpha <= 0.0 {
                 continue;
             }
+            if let Some(na) = note_assets.filter(|a| a.has_cover_for(cover.direction)) {
+                let lane = cover.direction.as_index();
+                if let Some((tex, tex_size)) = na.cover_tex[lane] {
+                    let frames = match cover.phase {
+                        HoldCoverPhase::Start => &na.cover_start[lane],
+                        HoldCoverPhase::Loop => &na.cover_loop[lane],
+                        HoldCoverPhase::End => &na.cover_end[lane],
+                        HoldCoverPhase::Hidden => &na.cover_loop[lane],
+                    };
+                    if let Some(frame) = frames
+                        .get(cover.frame_index % frames.len().max(1))
+                        .or_else(|| frames.first())
+                    {
+                        let hb = na.cover_hitbox;
+                        let params = SparrowDrawParams {
+                            texture: tex,
+                            tex_size,
+                            pos: [
+                                cover.x + STRUMLINE_SIZE * 0.5 - hb[0] * 0.5 - 12.0
+                                    + na.cover_offsets[0] * na.cover_scale,
+                                cover.y + style.visual_initial_offset + STRUMLINE_SIZE * 0.5
+                                    - 96.0
+                                    + na.cover_offsets[1] * na.cover_scale,
+                            ],
+                            scale: na.cover_scale,
+                            hitbox_size: hb,
+                            extra_offset: [0.0, 0.0],
+                            color: [1.0, 1.0, 1.0, cover.alpha],
+                            hsv_shift: [0.0; 3],
+                            blend: BlendMode::Normal,
+                            filter: if na.cover_pixel {
+                                FilterMode::Nearest
+                            } else {
+                                FilterMode::Linear
+                            },
+                            pixel_snap: false,
+                        };
+                        push_sparrow_frame(sprite_batcher, frame, &params);
+                        continue;
+                    }
+                }
+            }
+
             let base = StrumlineVisualStyle::lane_color(cover.direction);
+            let size = STRUMLINE_SIZE * 0.9;
+            let pad = (STRUMLINE_SIZE - size) * 0.5;
             sprite_batcher.push(
                 style.white_texture,
                 BlendMode::Add,
                 filter,
-                SpriteInstance::new(
-                    [cover.x + 12.0, cover.y + 96.0 - STRUMLINE_SIZE * 0.4],
-                    [STRUMLINE_SIZE * 0.9, STRUMLINE_SIZE * 0.9],
-                )
-                .with_color([base[0], base[1], base[2], 0.55 * cover.alpha]),
+                SpriteInstance::new([cover.x + pad, cover.y + pad], [size, size])
+                    .with_color([base[0], base[1], base[2], 0.55 * cover.alpha]),
             );
         }
 
         // 5. Note splashes.
+        let sparrow_splashes = note_assets.filter(|na| na.has_sparrow_splashes());
         for (_, splash) in self.splashes.iter_alive() {
             if !splash.visible {
                 continue;
             }
+            if let Some(na) = sparrow_splashes {
+                if let Some((tex, tex_size)) = na.splash_tex {
+                    let lane = splash.direction.as_index();
+                    let variants = &na.splash_variants[lane];
+                    if !variants.is_empty() {
+                        let var_frames = &variants[splash.variant % variants.len()];
+                        if let Some(frame) = var_frames.get(splash.frame_index) {
+                            let src = frame.source_size();
+                            let hb = [src[0] * na.splash_scale, src[1] * na.splash_scale];
+                            let params = SparrowDrawParams {
+                                texture: tex,
+                                tex_size,
+                                pos: [
+                                    splash.x
+                                        + style.visual_initial_offset
+                                        + na.splash_offsets[0] * na.splash_scale,
+                                    splash.y - style.visual_initial_offset
+                                        + na.splash_offsets[1] * na.splash_scale,
+                                ],
+                                scale: na.splash_scale,
+                                hitbox_size: hb,
+                                extra_offset: [hb[0] * 0.3, hb[1] * 0.3],
+                                color: [1.0, 1.0, 1.0, na.splash_alpha],
+                                hsv_shift: [0.0; 3],
+                                blend: na.splash_blend,
+                                filter: if na.splash_pixel {
+                                    FilterMode::Nearest
+                                } else {
+                                    FilterMode::Linear
+                                },
+                                pixel_snap: false,
+                            };
+                            push_sparrow_frame(sprite_batcher, frame, &params);
+                            continue;
+                        }
+                    }
+                }
+            }
+
             let progress =
                 (splash.anim_time_s * NOTE_ANIM_FPS / style.splash_frames.max(1) as f32).clamp(0.0, 1.0);
             let grow = STRUMLINE_SIZE * (1.0 + 0.55 * progress);

@@ -8,4 +8,5 @@ license.workspace = true
 fnfrs-core = { workspace = true }
 fnfrs-audio = { workspace = true }
 fnfrs-render = { workspace = true }
+serde_json = { workspace = true }
 winit = { workspace = true }

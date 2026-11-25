@@ -221,6 +221,7 @@ impl SustainTrailState {
     pub fn compute_screen_y(
         &self,
         strumline_y: f32,
+        visual_initial_offset: f32,
         scroll_speed: f64,
         is_downscroll: bool,
         song_position_ms: f64,
@@ -231,27 +232,26 @@ impl SustainTrailState {
         let note_y_delta =
             (PIXELS_PER_MS * (time_with_delta_ms - self.strum_time_ms) * scroll_speed) as f32
                 * if is_downscroll { 1.0 } else { -1.0 };
+        let base_y = strumline_y - visual_initial_offset + STRUMLINE_SIZE * 0.5;
 
         if self.missed_note && self.full_sustain_ms > self.sustain_ms {
             let dropped_px =
                 ((self.full_sustain_ms - self.sustain_ms) * PIXELS_PER_MS * scroll_speed) as f32;
             if is_downscroll {
-                strumline_y + note_y_delta - clip_height + STRUMLINE_SIZE * 0.5 + self.y_offset
+                base_y + note_y_delta - clip_height + self.y_offset
             } else {
-                strumline_y + note_y_delta - (graphic_height - clip_height) + dropped_px
-                    + STRUMLINE_SIZE * 0.5
-                    + self.y_offset
+                base_y + note_y_delta - (graphic_height - clip_height) + dropped_px + self.y_offset
             }
         } else if song_position_ms > self.strum_time_ms && self.hit_note {
             if is_downscroll {
-                strumline_y - clip_height + STRUMLINE_SIZE * 0.5
+                base_y - clip_height
             } else {
-                strumline_y - (graphic_height - clip_height) + STRUMLINE_SIZE * 0.5
+                base_y - (graphic_height - clip_height)
             }
         } else if is_downscroll {
-            strumline_y + note_y_delta - clip_height + STRUMLINE_SIZE * 0.5 + self.y_offset
+            base_y + note_y_delta - clip_height + self.y_offset
         } else {
-            strumline_y + note_y_delta + STRUMLINE_SIZE * 0.5 + self.y_offset
+            base_y + note_y_delta + self.y_offset
         }
     }
 

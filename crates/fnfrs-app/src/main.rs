@@ -6,12 +6,13 @@ use std::time::Instant;
 use anyhow::Result;
 use fnfrs_audio::{decode_file, AudioEngine, SongTracks, TrackStem};
 use fnfrs_core::constants::{
-    DEFAULT_DIFFICULTY, STRUMLINE_SIZE, STRUMLINE_Y_OFFSET, VIRTUAL_HEIGHT, VIRTUAL_WIDTH,
+    DEFAULT_DIFFICULTY, DEFAULT_NOTE_STYLE, STRUMLINE_SIZE, STRUMLINE_Y_OFFSET, VIRTUAL_HEIGHT,
+    VIRTUAL_WIDTH,
 };
 use fnfrs_core::paths::AssetLocator;
 use fnfrs_core::schema::song::{SongChartData, SongMetadata, SongNoteData};
 use fnfrs_game::{
-    GameplaySfxSlots, InputQueue, PlayConfig, PlaySession, StrumlineVisualStyle,
+    GameplaySfxSlots, InputQueue, NoteStyleAssets, PlayConfig, PlaySession, StrumlineVisualStyle,
 };
 use fnfrs_render::{
     BitmapFont, GpuContext, GpuError, MeshBatcher, SpriteBatcher, StackTextBuffer, TextAlign,
@@ -37,6 +38,7 @@ struct RuntimeState {
     mesh_batcher: MeshBatcher,
     hud_font: BitmapFont,
     hud_font_tex: TextureHandle,
+    note_assets: NoteStyleAssets,
     visual_style: StrumlineVisualStyle,
 
     session: PlaySession,
@@ -159,25 +161,11 @@ impl ApplicationHandler for App {
 
         let sprite_batcher = SpriteBatcher::new(&gpu, 2048);
         let mesh_batcher = MeshBatcher::new(&gpu, 2048, 4096);
-        let (hud_font, hud_font_tex) = match BitmapFont::create_embedded_on_gpu(&mut gpu) {
-            Ok(pair) => pair,
-            Err(err) => {
-                eprintln!("failed to upload embedded HUD font: {err}");
-                event_loop.exit();
-                return;
-            }
-        };
+        let (hud_font, hud_font_tex) = load_hud_font(&self.assets, &mut gpu, event_loop);
 
-        let mut visual_style = StrumlineVisualStyle::fallback(gpu.white_texture());
-        let hold_path = self.assets.image("NOTE_hold_assets");
-        if let Ok(bytes) = fs::read(&hold_path) {
-            if let Ok(hold_tex) = gpu.from_png_bytes(Some("NOTE_hold_assets"), &bytes) {
-                if let Some((w, h)) = gpu.texture_size(hold_tex) {
-                    visual_style.hold_texture = Some(hold_tex);
-                    visual_style.hold_tex_size = [w as f32, h as f32];
-                }
-            }
-        }
+        let note_assets =
+            NoteStyleAssets::load_from_assets(&self.assets, &mut gpu, DEFAULT_NOTE_STYLE);
+        let visual_style = note_assets.to_visual_style(gpu.white_texture());
 
         let mut session = create_session(&self.loaded_chart, PlayConfig::default());
         session.sfx_slots = self.sfx_slots;
@@ -192,6 +180,7 @@ impl ApplicationHandler for App {
             mesh_batcher,
             hud_font,
             hud_font_tex,
+            note_assets,
             visual_style,
             session,
             inputs: InputQueue::default(),
@@ -361,12 +350,18 @@ fn render_game_frame(
         &mut state.sprite_batcher,
         &mut state.mesh_batcher,
         &state.visual_style,
+        Some(&state.note_assets),
         &state.hud_font,
         state.hud_font_tex,
     );
 
+    let debug_scale = if state.hud_font.line_height() <= 10.0 {
+        1.5
+    } else {
+        0.9
+    };
     let info_style = TextStyle {
-        scale: 1.5,
+        scale: debug_scale,
         color: [0.75, 0.85, 0.95, 0.95],
         ..Default::default()
     };
@@ -397,7 +392,7 @@ fn render_game_frame(
         VIRTUAL_WIDTH - 18.0,
         6.0,
         &TextStyle {
-            scale: 1.5,
+            scale: debug_scale,
             color: [0.85, 0.85, 0.95, 0.95],
             align: TextAlign::Right,
             ..Default::default()
@@ -589,6 +584,36 @@ fn create_session(loaded: &LoadedChart, config: PlayConfig) -> PlaySession {
     }
 
     PlaySession::from_raw_notes(120.0, &player_notes, &opponent_notes, config)
+}
+
+fn load_hud_font(
+    assets: &AssetLocator,
+    gpu: &mut GpuContext,
+    event_loop: &ActiveEventLoop,
+) -> (BitmapFont, TextureHandle) {
+    let fnt_path = assets.font("vcr-bmp.fnt");
+    let png_path = assets.font("vcr-bmp.png");
+    if let (Ok(fnt_str), Ok(png_bytes)) = (fs::read_to_string(&fnt_path), fs::read(&png_path)) {
+        if let Ok(tex) = gpu.from_png_bytes(Some("vcr-bmp"), &png_bytes) {
+            let size = gpu.texture_size(tex);
+            if let Ok(font) = BitmapFont::from_bmfont(
+                &fnt_str,
+                size.map(|(w, _)| w),
+                size.map(|(_, h)| h),
+            ) {
+                return (font, tex);
+            }
+        }
+    }
+
+    match BitmapFont::create_embedded_on_gpu(gpu) {
+        Ok(pair) => pair,
+        Err(err) => {
+            eprintln!("failed to upload embedded HUD font: {err}");
+            event_loop.exit();
+            (BitmapFont::embedded_fallback().0, gpu.white_texture())
+        }
+    }
 }
 
 fn main() -> Result<()> {
