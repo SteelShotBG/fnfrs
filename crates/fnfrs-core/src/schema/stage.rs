@@ -57,7 +57,10 @@ pub struct StageDataCharacter {
     pub scale: f32,
     #[serde(default, deserialize_with = "deserialize_vec2_zero")]
     pub camera_offsets: [f32; 2],
-    #[serde(default = "default_vec2_one", deserialize_with = "deserialize_vec2_one")]
+    #[serde(
+        default = "default_vec2_one",
+        deserialize_with = "deserialize_vec2_one"
+    )]
     pub scroll: [f32; 2],
     #[serde(default = "default_one")]
     pub alpha: f32,
@@ -128,7 +131,10 @@ pub struct StageDataProp {
     pub alpha: f32,
     #[serde(default)]
     pub dance_every: f32,
-    #[serde(default = "default_vec2_one", deserialize_with = "deserialize_vec2_one")]
+    #[serde(
+        default = "default_vec2_one",
+        deserialize_with = "deserialize_vec2_one"
+    )]
     pub scroll: [f32; 2],
     #[serde(default)]
     pub animations: Vec<AnimationData>,

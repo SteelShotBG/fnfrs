@@ -149,7 +149,9 @@ impl AssetLocator {
     /// Resolves a font file (`fonts/<key>`).
     #[must_use]
     pub fn font(&self, key: &str) -> PathBuf {
-        self.root.join("fonts").join(key.trim_start_matches(['/', '\\']))
+        self.root
+            .join("fonts")
+            .join(key.trim_start_matches(['/', '\\']))
     }
 
     /// Resolves a JSON data file (`data/<key>.json`).
@@ -186,14 +188,20 @@ impl AssetLocator {
     #[must_use]
     pub fn song_inst(&self, song_id: &str, suffix: &str) -> PathBuf {
         let id = song_id.to_ascii_lowercase();
-        self.root.join("songs").join(id).join(format!("Inst{suffix}.ogg"))
+        self.root
+            .join("songs")
+            .join(id)
+            .join(format!("Inst{suffix}.ogg"))
     }
 
     /// Resolves `songs/<song_id>/Voices<suffix>.ogg`.
     #[must_use]
     pub fn song_voices(&self, song_id: &str, suffix: &str) -> PathBuf {
         let id = song_id.to_ascii_lowercase();
-        self.root.join("songs").join(id).join(format!("Voices{suffix}.ogg"))
+        self.root
+            .join("songs")
+            .join(id)
+            .join(format!("Voices{suffix}.ogg"))
     }
 }
 

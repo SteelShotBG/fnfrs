@@ -266,14 +266,18 @@ impl SongEventData {
     #[must_use]
     pub fn get_i64(&self, key: &str) -> Option<i64> {
         let field = self.value.get(key)?;
-        field.as_i64().or_else(|| field.as_str().and_then(|s| s.parse::<i64>().ok()))
+        field
+            .as_i64()
+            .or_else(|| field.as_str().and_then(|s| s.parse::<i64>().ok()))
     }
 
     /// Retrieves a float field by key from an object `value`.
     #[must_use]
     pub fn get_f64(&self, key: &str) -> Option<f64> {
         let field = self.value.get(key)?;
-        field.as_f64().or_else(|| field.as_str().and_then(|s| s.parse::<f64>().ok()))
+        field
+            .as_f64()
+            .or_else(|| field.as_str().and_then(|s| s.parse::<f64>().ok()))
     }
 
     /// Retrieves a string field by key.

@@ -93,7 +93,10 @@ mod schema_tests {
             "animations": [{ "name": "idle", "prefix": "Idle" }]
         }"#;
         let character: CharacterData = serde_json::from_str(char_json).expect("parse char");
-        assert_eq!(character.render_type, CharacterRenderType::MultiAnimateAtlas);
+        assert_eq!(
+            character.render_type,
+            CharacterRenderType::MultiAnimateAtlas
+        );
         assert!(character.flip_x);
 
         let ns_json = r#"{

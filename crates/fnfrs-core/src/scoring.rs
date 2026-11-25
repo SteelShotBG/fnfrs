@@ -323,11 +323,17 @@ mod tests {
             total_notes: 100,
             ..Default::default()
         };
-        assert_eq!(calculate_rank(&perfect_gold), Some(ScoringRank::PerfectGold));
+        assert_eq!(
+            calculate_rank(&perfect_gold),
+            Some(ScoringRank::PerfectGold)
+        );
 
         let mut buf = [0_u8; 32];
         assert_eq!(format_score_into(&mut buf, 0, false), "Score: 0");
-        assert_eq!(format_score_into(&mut buf, 1234560, false), "Score: 1,234,560");
+        assert_eq!(
+            format_score_into(&mut buf, 1234560, false),
+            "Score: 1,234,560"
+        );
         assert_eq!(format_score_into(&mut buf, -100, false), "Score: -100");
         assert_eq!(format_score_into(&mut buf, 999, true), "Bot Play Enabled");
     }

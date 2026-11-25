@@ -81,7 +81,8 @@ impl Conductor {
     /// Returns the active [`SongTimeChange`] at the current song position, if any.
     #[must_use]
     pub fn current_time_change(&self) -> Option<&SongTimeChange> {
-        self.current_time_change_idx.and_then(|idx| self.time_changes.get(idx))
+        self.current_time_change_idx
+            .and_then(|idx| self.time_changes.get(idx))
     }
 
     /// Current beats per minute.
@@ -105,13 +106,15 @@ impl Conductor {
     /// Current time signature numerator (e.g. `4` in `4/4`).
     #[must_use]
     pub fn time_signature_numerator(&self) -> u32 {
-        self.current_time_change().map_or(DEFAULT_TIME_SIGNATURE_NUM, |tc| tc.time_signature_num)
+        self.current_time_change()
+            .map_or(DEFAULT_TIME_SIGNATURE_NUM, |tc| tc.time_signature_num)
     }
 
     /// Current time signature denominator (e.g. `4` in `4/4`).
     #[must_use]
     pub fn time_signature_denominator(&self) -> u32 {
-        self.current_time_change().map_or(DEFAULT_TIME_SIGNATURE_DEN, |tc| tc.time_signature_den)
+        self.current_time_change()
+            .map_or(DEFAULT_TIME_SIGNATURE_DEN, |tc| tc.time_signature_den)
     }
 
     /// Duration of one beat in milliseconds.
