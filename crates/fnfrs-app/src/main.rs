@@ -14,8 +14,8 @@ use fnfrs_game::{
     GameplaySfxSlots, InputQueue, PlayConfig, PlaySession, StrumlineVisualStyle,
 };
 use fnfrs_render::{
-    BitmapFont, BlendMode, FilterMode, GpuContext, GpuError, MeshBatcher, SpriteBatcher,
-    SpriteInstance, StackTextBuffer, TextAlign, TextStyle, TextureHandle,
+    BitmapFont, GpuContext, GpuError, MeshBatcher, SpriteBatcher, StackTextBuffer, TextAlign,
+    TextStyle, TextureHandle,
 };
 use winit::application::ApplicationHandler;
 use winit::dpi::LogicalSize;
@@ -44,6 +44,7 @@ struct RuntimeState {
     loaded_chart: LoadedChart,
 
     has_song_audio: bool,
+    pending_seek_gen: Option<u32>,
     minimized: bool,
     occluded: bool,
     start_time: Instant,
@@ -200,6 +201,7 @@ impl ApplicationHandler for App {
                 label: self.loaded_chart.label.clone(),
             },
             has_song_audio: self.has_song_audio,
+            pending_seek_gen: None,
             minimized: false,
             occluded: false,
             start_time: now,
@@ -237,6 +239,7 @@ impl ApplicationHandler for App {
                             }
                             KeyCode::KeyB => {
                                 state.session.config.is_botplay = !state.session.config.is_botplay;
+                                state.session.refresh_hud();
                                 return;
                             }
                             KeyCode::Tab => {
@@ -251,6 +254,7 @@ impl ApplicationHandler for App {
                                 state.inputs.clear();
                                 state.start_time = now;
                                 if let Some(engine) = self.audio.as_mut() {
+                                    state.pending_seek_gen = Some(engine.clock().generation());
                                     let _ = engine.seek_ms(0.0);
                                     let _ = engine.play();
                                 }
@@ -312,7 +316,16 @@ fn render_game_frame(
 
     let song_pos_ms = if state.has_song_audio {
         if let Some(engine) = audio.as_deref_mut() {
-            engine.clock_mut().position_ms_at(now)
+            if let Some(old_gen) = state.pending_seek_gen {
+                if engine.clock().generation() == old_gen {
+                    0.0
+                } else {
+                    state.pending_seek_gen = None;
+                    engine.clock_mut().position_ms_at(now)
+                }
+            } else {
+                engine.clock_mut().position_ms_at(now)
+            }
         } else {
             now.saturating_duration_since(state.start_time).as_secs_f64() * 1000.0
         }
@@ -343,15 +356,6 @@ fn render_game_frame(
     state.sprite_batcher.set_virtual_projection(&state.gpu.queue);
     state.mesh_batcher.begin_frame();
     state.mesh_batcher.set_virtual_projection(&state.gpu.queue);
-
-    let white = state.gpu.white_texture();
-    state.sprite_batcher.push(
-        white,
-        BlendMode::Normal,
-        FilterMode::Nearest,
-        SpriteInstance::new([0.0, 0.0], [VIRTUAL_WIDTH, VIRTUAL_HEIGHT])
-            .with_color([0.06, 0.05, 0.11, 1.0]),
-    );
 
     state.session.draw(
         &mut state.sprite_batcher,
@@ -439,7 +443,12 @@ fn render_game_frame(
                 depth_slice: None,
                 resolve_target: None,
                 ops: wgpu::Operations {
-                    load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                    load: wgpu::LoadOp::Clear(wgpu::Color {
+                        r: 0.015,
+                        g: 0.012,
+                        b: 0.035,
+                        a: 1.0,
+                    }),
                     store: wgpu::StoreOp::Store,
                 },
             })],

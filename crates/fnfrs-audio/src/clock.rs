@@ -160,6 +160,12 @@ impl SampleClock {
     pub fn sample_rate(&self) -> u32 {
         self.shared.sample_rate()
     }
+
+    /// Monotonic transport generation counter incremented on load/unload/seek.
+    #[must_use]
+    pub fn generation(&self) -> u32 {
+        self.shared.generation()
+    }
 }
 
 #[cfg(test)]

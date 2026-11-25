@@ -216,9 +216,7 @@ impl SustainTrailState {
         Self::sustain_height(remaining, scroll_speed)
     }
 
-    /// Updates screen-space `y`, clipping progress, and visibility for the current frame.
-    ///
-    /// Returns `true` if `MeshBatcher::push_sustain_trail` should render this trail.
+    /// Updates screen-space `y` for the current frame matching `MeshBatcher::push_sustain_trail`.
     #[allow(clippy::too_many_arguments)]
     pub fn compute_screen_y(
         &self,
@@ -229,31 +227,31 @@ impl SustainTrailState {
         time_with_delta_ms: f64,
     ) -> f32 {
         let clip_height = self.current_clip_height(song_position_ms, scroll_speed);
+        let graphic_height = Self::sustain_height(self.full_sustain_ms, scroll_speed);
         let note_y_delta =
             (PIXELS_PER_MS * (time_with_delta_ms - self.strum_time_ms) * scroll_speed) as f32
                 * if is_downscroll { 1.0 } else { -1.0 };
 
         if self.missed_note && self.full_sustain_ms > self.sustain_ms {
             let dropped_px =
-                ((self.full_sustain_ms - self.sustain_ms) * PIXELS_PER_MS) as f32;
+                ((self.full_sustain_ms - self.sustain_ms) * PIXELS_PER_MS * scroll_speed) as f32;
             if is_downscroll {
-                strumline_y - INITIAL_OFFSET + note_y_delta - clip_height + STRUMLINE_SIZE * 0.5
-                    + self.y_offset
+                strumline_y + note_y_delta - clip_height + STRUMLINE_SIZE * 0.5 + self.y_offset
             } else {
-                strumline_y - INITIAL_OFFSET + note_y_delta + dropped_px + STRUMLINE_SIZE * 0.5
+                strumline_y + note_y_delta - (graphic_height - clip_height) + dropped_px
+                    + STRUMLINE_SIZE * 0.5
                     + self.y_offset
             }
         } else if song_position_ms > self.strum_time_ms && self.hit_note {
             if is_downscroll {
-                strumline_y - INITIAL_OFFSET - clip_height + STRUMLINE_SIZE * 0.5
+                strumline_y - clip_height + STRUMLINE_SIZE * 0.5
             } else {
-                strumline_y - INITIAL_OFFSET + STRUMLINE_SIZE * 0.5
+                strumline_y - (graphic_height - clip_height) + STRUMLINE_SIZE * 0.5
             }
         } else if is_downscroll {
-            strumline_y - INITIAL_OFFSET + note_y_delta - clip_height + STRUMLINE_SIZE * 0.5
-                + self.y_offset
+            strumline_y + note_y_delta - clip_height + STRUMLINE_SIZE * 0.5 + self.y_offset
         } else {
-            strumline_y - INITIAL_OFFSET + note_y_delta + STRUMLINE_SIZE * 0.5 + self.y_offset
+            strumline_y + note_y_delta + STRUMLINE_SIZE * 0.5 + self.y_offset
         }
     }
 

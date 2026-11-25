@@ -4,7 +4,7 @@
 
 use fnfrs_core::constants::{
     GHOST_TAP_DELAY, HIT_WINDOW_MS, INITIAL_OFFSET, KEY_COUNT, NOTE_SPACING, NOTE_SPLASH_CAP,
-    NUDGE, PIXELS_PER_MS, STRUMLINE_SIZE, VIRTUAL_HEIGHT,
+    PIXELS_PER_MS, STRUMLINE_SIZE, VIRTUAL_HEIGHT,
 };
 use fnfrs_core::pool::{FixedPool, PoolHandle};
 use fnfrs_core::schema::song::SongNoteData;
@@ -334,7 +334,7 @@ impl Strumline {
     /// Recomputes receptor X/Y positions matching `Strumline.setNoteSpacing`.
     pub fn layout_receptors(&mut self) {
         for (i, dir) in NoteDirection::ALL.iter().enumerate() {
-            let rx = self.x + self.get_x_pos(*dir) + INITIAL_OFFSET;
+            let rx = self.x + self.get_x_pos(*dir);
             let ry = self.y;
             self.receptors[i].x = rx;
             self.receptors[i].y = ry;
@@ -657,7 +657,7 @@ impl Strumline {
                 None
             };
 
-            let note_x = lane_x - NUDGE;
+            let note_x = lane_x;
             if let Some((_, note)) = self.notes.acquire() {
                 *note = NoteEntity {
                     strum_time_ms: strum_time,
@@ -690,7 +690,7 @@ impl Strumline {
         let mut kill_notes_len = 0usize;
 
         for (handle, note) in self.notes.iter_alive_mut() {
-            note.y = self.y - INITIAL_OFFSET
+            note.y = self.y
                 + Self::get_note_y(
                     note.strum_time_ms,
                     self.scroll_speed,
@@ -975,11 +975,16 @@ impl Strumline {
                 let base = StrumlineVisualStyle::lane_color(hold.direction);
                 let w = (STRUMLINE_SIZE * 0.28).max(12.0);
                 let cx = hold.x + (hold.graphic_width - w) * 0.5;
+                let bar_y = if !self.is_downscroll && hold.hit_note && song_position_ms > hold.strum_time_ms {
+                    self.y + STRUMLINE_SIZE * 0.5
+                } else {
+                    hold.y
+                };
                 sprite_batcher.push(
                     style.white_texture,
                     BlendMode::Normal,
                     FilterMode::Nearest,
-                    SpriteInstance::new([cx, hold.y], [w, clip_h])
+                    SpriteInstance::new([cx, bar_y], [w, clip_h])
                         .with_color([base[0], base[1], base[2], 0.65 * hold.alpha]),
                 );
             }

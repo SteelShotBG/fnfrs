@@ -3,7 +3,6 @@
 //! health mechanics, and `AudioEngine` SFX/stem controls with zero per-frame
 //! heap allocations.
 
-use std::fmt::Write as _;
 use std::time::Instant;
 
 use fnfrs_audio::{AudioCommand, AudioEngine, TrackKind};
@@ -19,7 +18,7 @@ use fnfrs_core::scoring::{
     format_score_into, get_miss_score, judge_note, score_note, Judgement, ScoreTallies,
     ScoringSystem,
 };
-use fnfrs_render::{BitmapFont, MeshBatcher, SpriteBatcher, StackTextBuffer, TextAlign, TextStyle, TextureHandle};
+use fnfrs_render::{BitmapFont, MeshBatcher, SpriteBatcher, TextAlign, TextStyle, TextureHandle};
 
 use crate::input::{compute_note_diff_ms, InputQueue, NoteDirection};
 use crate::popup::PopUpPool;
@@ -96,7 +95,7 @@ pub struct PlaySession {
     pub sfx_slots: GameplaySfxSlots,
 
     score_text_buf: [u8; 32],
-    stats_buf: StackTextBuffer<96>,
+    score_text_len: usize,
     rng_seed: u32,
 }
 
@@ -176,7 +175,7 @@ impl PlaySession {
             is_player_dying: false,
             sfx_slots: GameplaySfxSlots::default(),
             score_text_buf: [0u8; 32],
-            stats_buf: StackTextBuffer::new(),
+            score_text_len: 0,
             rng_seed: 0x1337_BEEF,
         };
         session.refresh_hud_buffers();
@@ -238,7 +237,7 @@ impl PlaySession {
             is_player_dying: false,
             sfx_slots: GameplaySfxSlots::default(),
             score_text_buf: [0u8; 32],
-            stats_buf: StackTextBuffer::new(),
+            score_text_len: 0,
             rng_seed: 0x1337_BEEF,
         };
         session.refresh_hud_buffers();
@@ -629,27 +628,21 @@ impl PlaySession {
         x
     }
 
+    /// Refreshes stack-formatted HUD score text immediately (e.g. after toggling Botplay).
+    pub fn refresh_hud(&mut self) {
+        self.refresh_hud_buffers();
+    }
+
     fn refresh_hud_buffers(&mut self) {
         let score = self.score();
-        let _ = format_score_into(&mut self.score_text_buf, score, self.config.is_botplay);
-
-        self.stats_buf.clear();
-        let _ = write!(
-            self.stats_buf,
-            "Combo: {} | Misses: {} | Sick: {}",
-            self.tallies.combo, self.tallies.missed, self.tallies.sick
-        );
+        let formatted = format_score_into(&mut self.score_text_buf, score, self.config.is_botplay);
+        self.score_text_len = formatted.len();
     }
 
     /// Zero-allocation formatted HUD score bytes (`"Score: 1,234,560"` or `"Bot Play Enabled"`).
     #[must_use]
     pub fn score_text_bytes(&self) -> &[u8] {
-        let len = self
-            .score_text_buf
-            .iter()
-            .position(|&b| b == 0)
-            .unwrap_or(self.score_text_buf.len());
-        &self.score_text_buf[..len]
+        &self.score_text_buf[..self.score_text_len]
     }
 
     /// Queues strumlines, popups, health bar, and HUD text into `sprite_batcher` &
@@ -746,23 +739,15 @@ impl PlaySession {
         let hud_style = TextStyle {
             scale: 2.0,
             color: [1.0, 1.0, 1.0, 1.0],
-            align: TextAlign::Center,
+            align: TextAlign::Right,
             ..Default::default()
         };
         font.draw_bytes(
             sprite_batcher,
             font_tex,
             self.score_text_bytes(),
-            VIRTUAL_WIDTH * 0.5 + 210.0,
-            bar_y + 22.0,
-            &hud_style,
-        );
-        font.draw_bytes(
-            sprite_batcher,
-            font_tex,
-            self.stats_buf.as_bytes(),
-            VIRTUAL_WIDTH * 0.5 - 150.0,
-            bar_y + 22.0,
+            bar_x + bar_w - 40.0,
+            bar_y + 24.0,
             &hud_style,
         );
     }
