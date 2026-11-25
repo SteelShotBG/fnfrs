@@ -95,23 +95,53 @@ impl GpuContext {
     /// Initializes `wgpu` synchronously on `window` using `pollster::block_on`.
     pub fn new(window: Arc<Window>) -> Result<Self, GpuError> {
         let size = window.inner_size();
-        let instance =
-            wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
-        let surface = instance.create_surface(window)?;
 
-        let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
-            power_preference: wgpu::PowerPreference::HighPerformance,
+        let mut instance_desc = wgpu::InstanceDescriptor::new_without_display_handle_from_env();
+        if std::env::var_os("WGPU_BACKEND").is_none() {
+            // Restrict default Windows backend to DX12 so Vulkan/OpenGL ICD
+            // driver heaps are not all loaded simultaneously into process RAM.
+            #[cfg(target_os = "windows")]
+            {
+                instance_desc.backends = wgpu::Backends::DX12;
+            }
+            #[cfg(not(target_os = "windows"))]
+            {
+                instance_desc.backends = wgpu::Backends::PRIMARY;
+            }
+        }
+
+        let mut instance = wgpu::Instance::new(instance_desc);
+        let mut surface = instance.create_surface(Arc::clone(&window))?;
+
+        let adapter = match pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+            power_preference: wgpu::PowerPreference::None,
             compatible_surface: Some(&surface),
             force_fallback_adapter: false,
             apply_limit_buckets: false,
-        }))?;
+        })) {
+            Ok(adapter) => adapter,
+            Err(_) => {
+                instance = wgpu::Instance::new(
+                    wgpu::InstanceDescriptor::new_without_display_handle_from_env(),
+                );
+                surface = instance.create_surface(window)?;
+                pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+                    power_preference: wgpu::PowerPreference::None,
+                    compatible_surface: Some(&surface),
+                    force_fallback_adapter: false,
+                    apply_limit_buckets: false,
+                }))?
+            }
+        };
 
-        let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
-            label: Some("fnfrs-device"),
-            required_features: wgpu::Features::empty(),
-            required_limits: wgpu::Limits::default(),
-            ..Default::default()
-        }))?;
+        let (device, queue) =
+            pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+                label: Some("fnfrs-device"),
+                required_features: wgpu::Features::empty(),
+                required_limits: wgpu::Limits::default(),
+                memory_hints: wgpu::MemoryHints::MemoryUsage,
+                ..Default::default()
+            }))?;
 
         let caps = surface.get_capabilities(&adapter);
         if caps.formats.is_empty() {
@@ -148,7 +178,7 @@ impl GpuContext {
             present_mode,
             alpha_mode,
             view_formats: vec![],
-            desired_maximum_frame_latency: 2,
+            desired_maximum_frame_latency: 1,
             color_space: wgpu::SurfaceColorSpace::Auto,
         };
         surface.configure(&device, &config);

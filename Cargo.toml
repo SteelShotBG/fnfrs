@@ -4,6 +4,7 @@ members = [
     "crates/fnfrs-core",
     "crates/fnfrs-audio",
     "crates/fnfrs-render",
+    "crates/fnfrs-game",
     "crates/fnfrs-app",
 ]
 
@@ -16,6 +17,7 @@ license = "MIT"
 fnfrs-core = { path = "crates/fnfrs-core" }
 fnfrs-audio = { path = "crates/fnfrs-audio" }
 fnfrs-render = { path = "crates/fnfrs-render" }
+fnfrs-game = { path = "crates/fnfrs-game" }
 wgpu = "30.0.2"
 winit = "0.30.13"
 pollster = "1.0.3"
