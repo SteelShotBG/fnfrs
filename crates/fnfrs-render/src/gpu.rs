@@ -87,7 +87,8 @@ pub struct GpuContext {
     pub nearest_repeat_sampler: wgpu::Sampler,
     pub linear_repeat_sampler: wgpu::Sampler,
     pub texture_bind_group_layout: wgpu::BindGroupLayout,
-    textures: Vec<TextureEntry>,
+    textures: Vec<Option<TextureEntry>>,
+    free_texture_slots: Vec<u32>,
     white_texture: TextureHandle,
 }
 
@@ -98,16 +99,9 @@ impl GpuContext {
 
         let mut instance_desc = wgpu::InstanceDescriptor::new_without_display_handle_from_env();
         if std::env::var_os("WGPU_BACKEND").is_none() {
-            // Restrict default Windows backend to DX12 so Vulkan/OpenGL ICD
-            // driver heaps are not all loaded simultaneously into process RAM.
-            #[cfg(target_os = "windows")]
-            {
-                instance_desc.backends = wgpu::Backends::DX12;
-            }
-            #[cfg(not(target_os = "windows"))]
-            {
-                instance_desc.backends = wgpu::Backends::PRIMARY;
-            }
+            // Default to Vulkan across desktop & mobile so only one low-overhead
+            // driver heap is loaded and shader behavior matches Android.
+            instance_desc.backends = wgpu::Backends::VULKAN;
         }
 
         let mut instance = wgpu::Instance::new(instance_desc);
@@ -121,9 +115,12 @@ impl GpuContext {
         })) {
             Ok(adapter) => adapter,
             Err(_) => {
-                instance = wgpu::Instance::new(
-                    wgpu::InstanceDescriptor::new_without_display_handle_from_env(),
-                );
+                let mut fallback_desc =
+                    wgpu::InstanceDescriptor::new_without_display_handle_from_env();
+                if std::env::var_os("WGPU_BACKEND").is_none() {
+                    fallback_desc.backends = wgpu::Backends::PRIMARY;
+                }
+                instance = wgpu::Instance::new(fallback_desc);
                 surface = instance.create_surface(window)?;
                 pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
                     power_preference: wgpu::PowerPreference::None,
@@ -245,6 +242,7 @@ impl GpuContext {
             linear_repeat_sampler,
             texture_bind_group_layout,
             textures: Vec::new(),
+            free_texture_slots: Vec::new(),
             white_texture: TextureHandle(0),
         };
 
@@ -363,9 +361,7 @@ impl GpuContext {
             &self.linear_repeat_sampler,
         );
 
-        let index = u32::try_from(self.textures.len())
-            .map_err(|_| GpuError::InvalidTextureHandle(u32::MAX))?;
-        self.textures.push(TextureEntry {
+        let entry = TextureEntry {
             _texture: texture,
             _view: view,
             width,
@@ -374,9 +370,48 @@ impl GpuContext {
             bind_group_linear_clamp,
             bind_group_nearest_repeat,
             bind_group_linear_repeat,
-        });
+        };
+
+        let index = if let Some(reused) = self.free_texture_slots.pop() {
+            self.textures[reused as usize] = Some(entry);
+            reused
+        } else {
+            let idx = u32::try_from(self.textures.len())
+                .map_err(|_| GpuError::InvalidTextureHandle(u32::MAX))?;
+            self.textures.push(Some(entry));
+            idx
+        };
 
         Ok(TextureHandle(index))
+    }
+
+    /// Unloads a GPU texture and recycles its slot index (preserving `white_texture`).
+    pub fn unload_texture(&mut self, handle: TextureHandle) -> bool {
+        if handle == self.white_texture {
+            return false;
+        }
+        let Some(slot) = self.textures.get_mut(handle.0 as usize) else {
+            return false;
+        };
+        if slot.take().is_some() {
+            self.free_texture_slots.push(handle.0);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Releases all textures except the built-in 1x1 `white_texture` so song/stage
+    /// transitions reclaim GPU VRAM cleanly.
+    pub fn clear_user_textures(&mut self) {
+        self.free_texture_slots.clear();
+        for (idx, slot) in self.textures.iter_mut().enumerate() {
+            if idx as u32 == self.white_texture.0 {
+                continue;
+            }
+            *slot = None;
+            self.free_texture_slots.push(idx as u32);
+        }
     }
 
     /// Creates a 1x1 opaque white RGBA8 texture (`[255, 255, 255, 255]`).
@@ -402,7 +437,8 @@ impl GpuContext {
     #[must_use]
     pub fn texture_size(&self, handle: TextureHandle) -> Option<(u32, u32)> {
         self.textures
-            .get(handle.0 as usize)
+            .get(handle.0 as usize)?
+            .as_ref()
             .map(|entry| (entry.width, entry.height))
     }
 
@@ -416,7 +452,7 @@ impl GpuContext {
         filter: FilterMode,
         repeat_v: bool,
     ) -> Option<&wgpu::BindGroup> {
-        let entry = self.textures.get(handle.0 as usize)?;
+        let entry = self.textures.get(handle.0 as usize)?.as_ref()?;
         Some(match (filter, repeat_v) {
             (FilterMode::Nearest, false) => &entry.bind_group_nearest_clamp,
             (FilterMode::Linear, false) => &entry.bind_group_linear_clamp,

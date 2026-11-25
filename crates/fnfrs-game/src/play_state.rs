@@ -10,8 +10,8 @@ use fnfrs_audio::{AudioCommand, AudioEngine, TrackKind};
 use fnfrs_core::conductor::{Conductor, ConductorEvents};
 use fnfrs_core::constants::{
     HEALTH_HOLD_BONUS_PER_SECOND, HEALTH_MAX, HEALTH_MIN, HEALTH_MISS_PENALTY, HEALTH_STARTING,
-    HIT_WINDOW_MS, SCORE_GHOST_MISS_PENALTY, SCORE_HOLD_BONUS_PER_SECOND, STRUMLINE_SIZE,
-    STRUMLINE_X_OFFSET, STRUMLINE_Y_OFFSET, VIRTUAL_WIDTH, VIRTUAL_HEIGHT,
+    SCORE_GHOST_MISS_PENALTY, SCORE_HOLD_BONUS_PER_SECOND, STRUMLINE_SIZE, STRUMLINE_X_OFFSET,
+    STRUMLINE_Y_OFFSET, VIRTUAL_HEIGHT, VIRTUAL_WIDTH,
 };
 use fnfrs_core::pool::PoolHandle;
 use fnfrs_core::schema::song::{SongChartData, SongMetadata, SongNoteData};
@@ -111,7 +111,7 @@ impl PlaySession {
         mut config: PlayConfig,
     ) -> Self {
         if config.scroll_speed <= 0.0 {
-            config.scroll_speed = chart.get_scroll_speed(difficulty).max(0.1);
+            config.scroll_speed = f64::from(chart.get_scroll_speed(difficulty)).max(0.1);
         }
 
         let mut conductor = Conductor::new();
@@ -630,7 +630,8 @@ impl PlaySession {
     }
 
     fn refresh_hud_buffers(&mut self) {
-        let _ = format_score_into(&mut self.score_text_buf, self.score(), self.config.is_botplay);
+        let score = self.score();
+        let _ = format_score_into(&mut self.score_text_buf, score, self.config.is_botplay);
 
         self.stats_buf.clear();
         let _ = write!(
@@ -771,6 +772,7 @@ impl PlaySession {
 mod tests {
     use std::time::Duration;
 
+    use fnfrs_core::constants::HIT_WINDOW_MS;
     use winit::keyboard::KeyCode;
 
     use super::*;

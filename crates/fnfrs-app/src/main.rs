@@ -44,6 +44,8 @@ struct RuntimeState {
     loaded_chart: LoadedChart,
 
     has_song_audio: bool,
+    minimized: bool,
+    occluded: bool,
     start_time: Instant,
     last_frame_time: Instant,
     frame_count: u64,
@@ -198,6 +200,8 @@ impl ApplicationHandler for App {
                 label: self.loaded_chart.label.clone(),
             },
             has_song_audio: self.has_song_audio,
+            minimized: false,
+            occluded: false,
             start_time: now,
             last_frame_time: now,
             frame_count: 0,
@@ -260,18 +264,37 @@ impl ApplicationHandler for App {
                 }
             }
             WindowEvent::Resized(new_size) => {
+                state.minimized = new_size.width == 0 || new_size.height == 0;
                 state.gpu.resize(new_size);
+                if !state.minimized && !state.occluded {
+                    event_loop.set_control_flow(ControlFlow::Poll);
+                    state.window.request_redraw();
+                }
+            }
+            WindowEvent::Occluded(occluded) => {
+                state.occluded = occluded;
+                if !occluded && !state.minimized {
+                    event_loop.set_control_flow(ControlFlow::Poll);
+                    state.window.request_redraw();
+                }
             }
             WindowEvent::RedrawRequested => {
-                render_game_frame(state, self.audio.as_mut(), event_loop);
+                if !state.minimized && !state.occluded {
+                    render_game_frame(state, self.audio.as_mut(), event_loop);
+                }
             }
             _ => {}
         }
     }
 
-    fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
+    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         if let Some(state) = &self.state {
-            state.window.request_redraw();
+            if state.minimized || state.occluded || state.session.is_paused {
+                event_loop.set_control_flow(ControlFlow::Wait);
+            } else {
+                event_loop.set_control_flow(ControlFlow::Poll);
+                state.window.request_redraw();
+            }
         }
     }
 }

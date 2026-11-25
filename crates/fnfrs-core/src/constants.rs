@@ -124,6 +124,15 @@ pub const HEALTH_MISS_PENALTY: f32 = -0.04 * HEALTH_MAX;
 /// Health lost on a ghost miss (`-4.0%` of `HEALTH_MAX`).
 pub const HEALTH_GHOST_MISS_PENALTY: f32 = -0.04 * HEALTH_MAX;
 
+/// Health lost per second when dropping a sustain note early (`Constants.HEALTH_HOLD_DROP_PENALTY_PER_SECOND`).
+pub const HEALTH_HOLD_DROP_PENALTY_PER_SECOND: f32 = 0.0 * HEALTH_MAX;
+
+/// Maximum health lost for dropping a sustain note early (`Constants.HEALTH_HOLD_DROP_PENALTY_MAX`).
+pub const HEALTH_HOLD_DROP_PENALTY_MAX: f32 = 0.0 * HEALTH_MAX;
+
+/// Grace period in seconds after hitting a note before ghost-tapping penalizes (`Constants.GHOST_TAP_DELAY`).
+pub const GHOST_TAP_DELAY: f64 = 3.0 / 8.0;
+
 /// Score penalty on ghost miss.
 pub const SCORE_GHOST_MISS_PENALTY: f32 = -10.0;
 

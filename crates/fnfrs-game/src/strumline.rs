@@ -289,6 +289,7 @@ pub struct Strumline {
 
     pub note_data: Vec<SongNoteData>,
     pub next_note_index: usize,
+    has_unhit_notes: bool,
     next_splash_variant: usize,
 }
 
@@ -323,6 +324,7 @@ impl Strumline {
             splashes: FixedPool::with_capacity(NOTE_SPLASH_CAP, |_| NoteSplashEntity::default()),
             note_data: Vec::new(),
             next_note_index: 0,
+            has_unhit_notes: false,
             next_splash_variant: 0,
         };
         strum.layout_receptors();
@@ -398,6 +400,7 @@ impl Strumline {
         self.splashes.clear();
         self.held_keys.clear();
         self.ghost_tap_timer_s = 0.0;
+        self.has_unhit_notes = false;
         for receptor in &mut self.receptors {
             receptor.play_static();
         }
@@ -413,14 +416,7 @@ impl Strumline {
     #[inline]
     #[must_use]
     pub fn may_ghost_tap(&self) -> bool {
-        let mut any_on_screen = false;
-        for (_, note) in self.notes.iter_alive() {
-            if !note.has_been_hit {
-                any_on_screen = true;
-                break;
-            }
-        }
-        self.ghost_tap_timer_s > 0.0 || !any_on_screen
+        self.ghost_tap_timer_s > 0.0 || !self.has_unhit_notes
     }
 
     #[inline]
@@ -591,12 +587,13 @@ impl Strumline {
             return;
         };
 
+        let cx = self.x + self.get_x_pos(dir) + STRUMLINE_SIZE * 0.5 - hold_w * 0.5 - 12.0;
+        let cy = self.y + INITIAL_OFFSET + STRUMLINE_SIZE * 0.5 - 96.0;
+
         let Some((cover_h, cover)) = self.covers.acquire() else {
             return;
         };
 
-        let cx = self.x + self.get_x_pos(dir) + STRUMLINE_SIZE * 0.5 - hold_w * 0.5 - 12.0;
-        let cy = self.y + INITIAL_OFFSET + STRUMLINE_SIZE * 0.5 - 96.0;
         cover.play_start(dir, hold_handle, cx, cy);
 
         if let Some(hold) = self.holds.get_mut(hold_handle) {
@@ -636,11 +633,12 @@ impl Strumline {
                 .unwrap_or(NoteDirection::Left);
             let strum_time = note_info.time;
             let length = note_info.length.max(0.0);
+            let lane_x = self.x + self.get_x_pos(dir);
 
             let hold_handle = if length > 0.0 {
+                let hold_x = lane_x + STRUMLINE_SIZE * 0.5
+                    - ((style.hold_tex_size[0] / 8.0) * style.hold_zoom) * 0.5;
                 if let Some((hh, hold)) = self.holds.acquire() {
-                    let hold_x = self.x + self.get_x_pos(dir) + STRUMLINE_SIZE * 0.5
-                        - ((style.hold_tex_size[0] / 8.0) * style.hold_zoom) * 0.5;
                     hold.reset(
                         strum_time,
                         dir,
@@ -659,8 +657,8 @@ impl Strumline {
                 None
             };
 
+            let note_x = lane_x - NUDGE;
             if let Some((_, note)) = self.notes.acquire() {
-                let note_x = self.x + self.get_x_pos(dir) - NUDGE;
                 *note = NoteEntity {
                     strum_time_ms: strum_time,
                     sustain_length_ms: length,
@@ -881,7 +879,8 @@ impl Strumline {
             style.cover_end_frames,
         );
 
-        if !self.has_notes_on_screen() {
+        self.has_unhit_notes = self.has_notes_on_screen();
+        if !self.has_unhit_notes {
             self.ghost_tap_timer_s = (self.ghost_tap_timer_s - f64::from(elapsed_s)).max(0.0);
         }
 
