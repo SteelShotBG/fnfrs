@@ -145,11 +145,13 @@ impl GpuContext {
             return Err(GpuError::SurfaceUnsupported);
         }
 
+        // Use a non-sRGB surface/texture pipeline matching OpenFL/HaxeFlixel's
+        // native sRGB-domain blending (so `#66FF33` and bitmap text outlines match 1:1).
         let format = caps
             .formats
             .iter()
             .copied()
-            .find(|f| f.is_srgb())
+            .find(|f| !f.is_srgb())
             .unwrap_or(caps.formats[0]);
 
         let present_mode = if caps.present_modes.contains(&wgpu::PresentMode::Fifo) {
@@ -318,7 +320,7 @@ impl GpuContext {
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba8UnormSrgb,
+            format: wgpu::TextureFormat::Rgba8Unorm,
             usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
             view_formats: &[],
         });

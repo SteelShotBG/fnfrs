@@ -6,8 +6,7 @@ use std::time::Instant;
 use anyhow::Result;
 use fnfrs_audio::{decode_file, AudioEngine, SongTracks, TrackStem};
 use fnfrs_core::constants::{
-    DEFAULT_DIFFICULTY, DEFAULT_NOTE_STYLE, STRUMLINE_SIZE, STRUMLINE_Y_OFFSET, VIRTUAL_HEIGHT,
-    VIRTUAL_WIDTH,
+    DEFAULT_DIFFICULTY, DEFAULT_NOTE_STYLE, VIRTUAL_HEIGHT, VIRTUAL_WIDTH,
 };
 use fnfrs_core::paths::AssetLocator;
 use fnfrs_core::schema::song::{SongChartData, SongMetadata, SongNoteData};
@@ -34,7 +33,8 @@ struct LoadedChart {
 struct RuntimeState {
     window: Arc<Window>,
     gpu: GpuContext,
-    sprite_batcher: SpriteBatcher,
+    bg_sprite_batcher: SpriteBatcher,
+    fg_sprite_batcher: SpriteBatcher,
     mesh_batcher: MeshBatcher,
     hud_font: BitmapFont,
     hud_font_tex: TextureHandle,
@@ -159,7 +159,8 @@ impl ApplicationHandler for App {
             }
         };
 
-        let sprite_batcher = SpriteBatcher::new(&gpu, 2048);
+        let bg_sprite_batcher = SpriteBatcher::new(&gpu, 512);
+        let fg_sprite_batcher = SpriteBatcher::new(&gpu, 2048);
         let mesh_batcher = MeshBatcher::new(&gpu, 2048, 4096);
         let (hud_font, hud_font_tex) = load_hud_font(&self.assets, &mut gpu, event_loop);
 
@@ -169,6 +170,7 @@ impl ApplicationHandler for App {
 
         let mut session = create_session(&self.loaded_chart, PlayConfig::default());
         session.sfx_slots = self.sfx_slots;
+        session.set_strumline_metrics(note_assets.strum_hitbox[1], note_assets.strum_offsets[1]);
 
         let now = Instant::now();
         window.request_redraw();
@@ -176,7 +178,8 @@ impl ApplicationHandler for App {
         self.state = Some(RuntimeState {
             window,
             gpu,
-            sprite_batcher,
+            bg_sprite_batcher,
+            fg_sprite_batcher,
             mesh_batcher,
             hud_font,
             hud_font_tex,
@@ -232,7 +235,8 @@ impl ApplicationHandler for App {
                                 return;
                             }
                             KeyCode::Tab => {
-                                toggle_downscroll(&mut state.session);
+                                let next = !state.session.config.is_downscroll;
+                                state.session.set_downscroll(next);
                                 return;
                             }
                             KeyCode::KeyR => {
@@ -240,6 +244,10 @@ impl ApplicationHandler for App {
                                 let sfx = state.session.sfx_slots;
                                 state.session = create_session(&state.loaded_chart, cfg);
                                 state.session.sfx_slots = sfx;
+                                state.session.set_strumline_metrics(
+                                    state.note_assets.strum_hitbox[1],
+                                    state.note_assets.strum_offsets[1],
+                                );
                                 state.inputs.clear();
                                 state.start_time = now;
                                 if let Some(engine) = self.audio.as_mut() {
@@ -325,6 +333,10 @@ fn render_game_frame(
             let sfx = state.session.sfx_slots;
             state.session = create_session(&state.loaded_chart, cfg);
             state.session.sfx_slots = sfx;
+            state.session.set_strumline_metrics(
+                state.note_assets.strum_hitbox[1],
+                state.note_assets.strum_offsets[1],
+            );
             state.start_time = now;
             0.0
         } else {
@@ -341,13 +353,16 @@ fn render_game_frame(
         &state.visual_style,
     );
 
-    state.sprite_batcher.begin_frame();
-    state.sprite_batcher.set_virtual_projection(&state.gpu.queue);
+    state.bg_sprite_batcher.begin_frame();
+    state.bg_sprite_batcher.set_virtual_projection(&state.gpu.queue);
+    state.fg_sprite_batcher.begin_frame();
+    state.fg_sprite_batcher.set_virtual_projection(&state.gpu.queue);
     state.mesh_batcher.begin_frame();
     state.mesh_batcher.set_virtual_projection(&state.gpu.queue);
 
     state.session.draw(
-        &mut state.sprite_batcher,
+        &mut state.bg_sprite_batcher,
+        &mut state.fg_sprite_batcher,
         &mut state.mesh_batcher,
         &state.visual_style,
         Some(&state.note_assets),
@@ -366,7 +381,7 @@ fn render_game_frame(
         ..Default::default()
     };
     state.hud_font.draw_bytes(
-        &mut state.sprite_batcher,
+        &mut state.fg_sprite_batcher,
         state.hud_font_tex,
         state.header_buf.as_bytes(),
         18.0,
@@ -386,7 +401,7 @@ fn render_game_frame(
         }
     );
     state.hud_font.draw_bytes(
-        &mut state.sprite_batcher,
+        &mut state.fg_sprite_batcher,
         state.hud_font_tex,
         state.fps_buf.as_bytes(),
         VIRTUAL_WIDTH - 18.0,
@@ -400,10 +415,13 @@ fn render_game_frame(
     );
 
     state
-        .sprite_batcher
+        .bg_sprite_batcher
         .prepare(&state.gpu.device, &state.gpu.queue);
     state
         .mesh_batcher
+        .prepare(&state.gpu.device, &state.gpu.queue);
+    state
+        .fg_sprite_batcher
         .prepare(&state.gpu.device, &state.gpu.queue);
 
     let frame = match state.gpu.acquire_frame() {
@@ -439,9 +457,9 @@ fn render_game_frame(
                 resolve_target: None,
                 ops: wgpu::Operations {
                     load: wgpu::LoadOp::Clear(wgpu::Color {
-                        r: 0.015,
-                        g: 0.012,
-                        b: 0.035,
+                        r: 0.145,
+                        g: 0.130,
+                        b: 0.215,
                         a: 1.0,
                     }),
                     store: wgpu::StoreOp::Store,
@@ -456,30 +474,14 @@ fn render_game_frame(
         let vp = state.gpu.letterbox_viewport();
         if vp.width > 0.0 && vp.height > 0.0 {
             render_pass.set_viewport(vp.x, vp.y, vp.width, vp.height, 0.0, 1.0);
+            state.bg_sprite_batcher.render(&mut render_pass, &state.gpu);
             state.mesh_batcher.render(&mut render_pass, &state.gpu);
-            state.sprite_batcher.render(&mut render_pass, &state.gpu);
+            state.fg_sprite_batcher.render(&mut render_pass, &state.gpu);
         }
     }
 
     state.gpu.queue.submit(std::iter::once(encoder.finish()));
     state.gpu.queue.present(frame);
-}
-
-fn toggle_downscroll(session: &mut PlaySession) {
-    session.config.is_downscroll = !session.config.is_downscroll;
-    let new_y = if session.config.is_downscroll {
-        VIRTUAL_HEIGHT - STRUMLINE_SIZE - STRUMLINE_Y_OFFSET
-    } else {
-        STRUMLINE_Y_OFFSET
-    };
-
-    session.player_strumline.is_downscroll = session.config.is_downscroll;
-    session.player_strumline.y = new_y;
-    session.player_strumline.layout_receptors();
-
-    session.opponent_strumline.is_downscroll = session.config.is_downscroll;
-    session.opponent_strumline.y = new_y;
-    session.opponent_strumline.layout_receptors();
 }
 
 fn load_bopeebo_chart(assets: &AssetLocator) -> LoadedChart {

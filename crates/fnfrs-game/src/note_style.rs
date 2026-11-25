@@ -78,8 +78,15 @@ pub fn push_sparrow_frame(
         flags |= SPRITE_FLAG_PIXEL_SNAP;
     }
 
+    // Inset UVs by 0.5 texels on linear-sampled atlases so 0px-padded Sparrow
+    // subtextures never bleed neighbor edge pixels at quad boundaries.
+    let inset_px = if matches!(params.filter, FilterMode::Linear) {
+        0.5
+    } else {
+        0.0
+    };
     let inst = SpriteInstance::new([draw_x, draw_y], [draw_w, draw_h])
-        .with_uv_rect(frame.uv_bounds(params.tex_size[0], params.tex_size[1]))
+        .with_uv_rect(frame.uv_bounds_inset(params.tex_size[0], params.tex_size[1], inset_px))
         .with_color(params.color)
         .with_hsv_shift(params.hsv_shift)
         .with_flags(flags);
@@ -258,8 +265,13 @@ impl NoteStyleAssets {
                             out.strum_confirm_hold[i] = collect_prefix(&sparrow.atlas, p);
                         }
                     }
-                    if let Some(first_static) = out.strum_static[0].first() {
-                        let src = first_static.source_size();
+                    if let Some(hitbox_frame) = sparrow
+                        .atlas
+                        .frames
+                        .first()
+                        .or_else(|| out.strum_static[0].first())
+                    {
+                        let src = hitbox_frame.source_size();
                         out.strum_hitbox = [src[0] * out.strum_scale, src[1] * out.strum_scale];
                     }
                 }

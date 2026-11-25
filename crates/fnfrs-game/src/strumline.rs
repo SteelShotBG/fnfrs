@@ -94,6 +94,7 @@ impl ReceptorState {
     }
 
     pub fn hold_confirm(&mut self) {
+        self.confirm_hold_timer_s = None;
         if self.anim != ReceptorAnim::ConfirmHold {
             self.anim = ReceptorAnim::ConfirmHold;
             self.anim_time_s = 0.0;
@@ -642,7 +643,8 @@ impl Strumline {
 
             let hold_handle = if length > 0.0 {
                 let hold_x = lane_x + STRUMLINE_SIZE * 0.5
-                    - ((style.hold_tex_size[0] / 8.0) * style.hold_zoom) * 0.5;
+                    - ((style.hold_tex_size[0] / 8.0) * style.hold_zoom) * 0.5
+                    - style.note_nudge;
                 if let Some((hh, hold)) = self.holds.acquire() {
                     hold.reset(
                         strum_time,
@@ -893,12 +895,14 @@ impl Strumline {
         events
     }
 
-    /// Queues all strumline elements (background, receptors, sustain trails, notes,
-    /// hold covers, splashes) into `sprite_batcher` and `mesh_batcher` with zero
-    /// heap allocations.
+    /// Queues all strumline elements across depth-ordered passes (`bg_batcher` for
+    /// background & receptors, `mesh_batcher` for sustain trails in front of receptors,
+    /// `fg_batcher` for note heads, hold covers, and splashes) with zero heap allocations.
+    #[allow(clippy::too_many_arguments)]
     pub fn draw(
         &self,
-        sprite_batcher: &mut SpriteBatcher,
+        bg_batcher: &mut SpriteBatcher,
+        fg_batcher: &mut SpriteBatcher,
         mesh_batcher: &mut MeshBatcher,
         style: &StrumlineVisualStyle,
         note_assets: Option<&NoteStyleAssets>,
@@ -911,10 +915,10 @@ impl Strumline {
         };
         let fallback_tex = style.note_texture.unwrap_or(style.white_texture);
 
-        // 0. Optional strumline lane background.
+        // 0. Optional strumline lane background (`zIndex < 10`).
         if self.strumline_bg_alpha > 0.0 {
             const BACKGROUND_PAD: f32 = 16.0;
-            sprite_batcher.push(
+            bg_batcher.push(
                 style.white_texture,
                 BlendMode::Normal,
                 FilterMode::Nearest,
@@ -926,7 +930,7 @@ impl Strumline {
             );
         }
 
-        // 1. Receptors.
+        // 1. Receptors (`zIndex 10`, behind sustain trails).
         let sparrow_strum = note_assets.filter(|na| na.has_sparrow_strum());
         for receptor in &self.receptors {
             if let Some(na) = sparrow_strum {
@@ -944,8 +948,10 @@ impl Strumline {
                             }
                         }
                     };
+                    // V-Slice receptor animations default to `looped: false`: hold the
+                    // final frame rather than wrapping back to frame 0 cleanly.
                     if let Some(frame) = frames
-                        .get(receptor.anim_frame % frames.len().max(1))
+                        .get(receptor.anim_frame.min(frames.len().saturating_sub(1)))
                         .or_else(|| frames.first())
                     {
                         let params = SparrowDrawParams {
@@ -971,7 +977,7 @@ impl Strumline {
                             },
                             pixel_snap: false,
                         };
-                        push_sparrow_frame(sprite_batcher, frame, &params);
+                        push_sparrow_frame(bg_batcher, frame, &params);
                         continue;
                     }
                 }
@@ -995,7 +1001,7 @@ impl Strumline {
                     STRUMLINE_SIZE * 0.02,
                 ),
             };
-            sprite_batcher.push(
+            bg_batcher.push(
                 fallback_tex,
                 BlendMode::Normal,
                 filter,
@@ -1004,7 +1010,7 @@ impl Strumline {
             );
         }
 
-        // 2. Clipped sustain trails (render behind note heads).
+        // 2. Clipped sustain trails (`zIndex 20`, render in front of receptors and behind note heads).
         if let Some(hold_tex) = style.hold_texture {
             for (_, hold) in self.holds.iter_alive() {
                 hold.queue_mesh(
@@ -1037,7 +1043,7 @@ impl Strumline {
                     } else {
                         hold.y
                     };
-                sprite_batcher.push(
+                fg_batcher.push(
                     style.white_texture,
                     BlendMode::Normal,
                     FilterMode::Nearest,
@@ -1047,7 +1053,7 @@ impl Strumline {
             }
         }
 
-        // 3. Note heads.
+        // 3. Note heads (`zIndex 30`).
         let sparrow_notes = note_assets.filter(|na| na.has_sparrow_notes());
         for (_, note) in self.notes.iter_alive() {
             if !note.visible || note.alpha <= 0.0 {
@@ -1084,7 +1090,7 @@ impl Strumline {
                             },
                             pixel_snap: false,
                         };
-                        push_sparrow_frame(sprite_batcher, frame, &params);
+                        push_sparrow_frame(fg_batcher, frame, &params);
                         continue;
                     }
                 }
@@ -1098,10 +1104,10 @@ impl Strumline {
             if note.desaturated {
                 inst = inst.with_hsv_shift([0.0, -0.8, 0.0]);
             }
-            sprite_batcher.push(fallback_tex, BlendMode::Normal, filter, inst);
+            fg_batcher.push(fallback_tex, BlendMode::Normal, filter, inst);
         }
 
-        // 4. Hold covers.
+        // 4. Hold covers (`zIndex 40`).
         for (_, cover) in self.covers.iter_alive() {
             if !cover.visible || cover.alpha <= 0.0 {
                 continue;
@@ -1143,7 +1149,7 @@ impl Strumline {
                             },
                             pixel_snap: false,
                         };
-                        push_sparrow_frame(sprite_batcher, frame, &params);
+                        push_sparrow_frame(fg_batcher, frame, &params);
                         continue;
                     }
                 }
@@ -1152,7 +1158,7 @@ impl Strumline {
             let base = StrumlineVisualStyle::lane_color(cover.direction);
             let size = STRUMLINE_SIZE * 0.9;
             let pad = (STRUMLINE_SIZE - size) * 0.5;
-            sprite_batcher.push(
+            fg_batcher.push(
                 style.white_texture,
                 BlendMode::Add,
                 filter,
@@ -1161,7 +1167,7 @@ impl Strumline {
             );
         }
 
-        // 5. Note splashes.
+        // 5. Note splashes (`zIndex 50`).
         let sparrow_splashes = note_assets.filter(|na| na.has_sparrow_splashes());
         for (_, splash) in self.splashes.iter_alive() {
             if !splash.visible {
@@ -1199,7 +1205,7 @@ impl Strumline {
                                 },
                                 pixel_snap: false,
                             };
-                            push_sparrow_frame(sprite_batcher, frame, &params);
+                            push_sparrow_frame(fg_batcher, frame, &params);
                             continue;
                         }
                     }
@@ -1211,7 +1217,7 @@ impl Strumline {
             let grow = STRUMLINE_SIZE * (1.0 + 0.55 * progress);
             let shift = (grow - STRUMLINE_SIZE) * 0.5;
             let base = StrumlineVisualStyle::lane_color(splash.direction);
-            sprite_batcher.push(
+            fg_batcher.push(
                 style.white_texture,
                 BlendMode::Add,
                 filter,

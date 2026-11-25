@@ -99,14 +99,26 @@ impl AtlasFrame {
     #[inline]
     #[must_use]
     pub fn uv_bounds(&self, tex_w: f32, tex_h: f32) -> [f32; 4] {
+        self.uv_bounds_inset(tex_w, tex_h, 0.0)
+    }
+
+    /// Computes normalized UV bounds `[u0, v0, u1, v1]` inset by `inset_px` texels on
+    /// every side (preventing bilinear edge bleeding across 0px-padded Sparrow frames).
+    #[inline]
+    #[must_use]
+    pub fn uv_bounds_inset(&self, tex_w: f32, tex_h: f32, inset_px: f32) -> [f32; 4] {
         if tex_w <= 0.0 || tex_h <= 0.0 {
             return [0.0, 0.0, 1.0, 1.0];
         }
+        let max_ix = (self.width as f32 * 0.5 - 0.01).max(0.0);
+        let max_iy = (self.height as f32 * 0.5 - 0.01).max(0.0);
+        let ix = inset_px.clamp(0.0, max_ix);
+        let iy = inset_px.clamp(0.0, max_iy);
         [
-            self.x as f32 / tex_w,
-            self.y as f32 / tex_h,
-            (self.x + self.width) as f32 / tex_w,
-            (self.y + self.height) as f32 / tex_h,
+            (self.x as f32 + ix) / tex_w,
+            (self.y as f32 + iy) / tex_h,
+            (self.x as f32 + self.width as f32 - ix) / tex_w,
+            (self.y as f32 + self.height as f32 - iy) / tex_h,
         ]
     }
 

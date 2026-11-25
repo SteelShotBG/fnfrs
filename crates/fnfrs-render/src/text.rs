@@ -950,16 +950,22 @@ impl BitmapFont {
         pos: [f32; 2],
         style: &TextStyle,
     ) {
+        let snap = matches!(filter, FilterMode::Nearest);
         self.layout_bytes(bytes, pos[0], pos[1], style, |quad| {
-            let instance = SpriteInstance::new([quad.x, quad.y], [quad.width, quad.height])
+            let draw_pos = if snap {
+                [quad.x.round(), quad.y.round()]
+            } else {
+                [quad.x, quad.y]
+            };
+            let instance = SpriteInstance::new(draw_pos, [quad.width, quad.height])
                 .with_uv_rect(quad.uv_rect)
                 .with_color(style.color);
             batcher.push(texture, BlendMode::Normal, filter, instance);
         });
     }
 
-    /// Queues a stack-formatted byte slice directly into `batcher` with a 1px
-    /// outline (`FlxBitmapText` `OUTLINE` style) and zero heap allocations.
+    /// Queues a stack-formatted byte slice directly into `batcher` with a crisp
+    /// 8-neighbor 1px outline (`FlxTextBorderStyle.OUTLINE`) and zero heap allocations.
     pub fn draw_bytes_outlined(
         &self,
         batcher: &mut SpriteBatcher,
@@ -972,9 +978,25 @@ impl BitmapFont {
         let mut outline_style = *style;
         outline_style.color = outline_color;
         outline_style.color[3] *= style.color[3];
-        const OFFSETS: [[f32; 2]; 4] = [[-1.0, 0.0], [1.0, 0.0], [0.0, -1.0], [0.0, 1.0]];
+        const OFFSETS: [[f32; 2]; 8] = [
+            [-1.0, -1.0],
+            [0.0, -1.0],
+            [1.0, -1.0],
+            [-1.0, 0.0],
+            [1.0, 0.0],
+            [-1.0, 1.0],
+            [0.0, 1.0],
+            [1.0, 1.0],
+        ];
         for off in OFFSETS {
-            self.draw_bytes(batcher, texture, bytes, pos[0] + off[0], pos[1] + off[1], &outline_style);
+            self.draw_bytes(
+                batcher,
+                texture,
+                bytes,
+                pos[0] + off[0],
+                pos[1] + off[1],
+                &outline_style,
+            );
         }
         self.draw_bytes(batcher, texture, bytes, pos[0], pos[1], style);
     }

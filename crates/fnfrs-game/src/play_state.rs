@@ -47,7 +47,7 @@ impl Default for PlayConfig {
             scroll_speed: 1.0,
             is_downscroll: false,
             is_botplay: false,
-            ghost_tapping: true,
+            ghost_tapping: false,
             practice_mode: false,
             scoring_system: ScoringSystem::Pbot1,
             player_vocals_gain: 1.0,
@@ -97,6 +97,8 @@ pub struct PlaySession {
 
     score_text_buf: [u8; 32],
     score_text_len: usize,
+    strum_hitbox_height: f32,
+    strum_offset_y: f32,
     rng_seed: u32,
 }
 
@@ -177,6 +179,8 @@ impl PlaySession {
             sfx_slots: GameplaySfxSlots::default(),
             score_text_buf: [0u8; 32],
             score_text_len: 0,
+            strum_hitbox_height: STRUMLINE_SIZE,
+            strum_offset_y: 0.0,
             rng_seed: 0x1337_BEEF,
         };
         session.refresh_hud_buffers();
@@ -239,6 +243,8 @@ impl PlaySession {
             sfx_slots: GameplaySfxSlots::default(),
             score_text_buf: [0u8; 32],
             score_text_len: 0,
+            strum_hitbox_height: STRUMLINE_SIZE,
+            strum_offset_y: 0.0,
             rng_seed: 0x1337_BEEF,
         };
         session.refresh_hud_buffers();
@@ -250,6 +256,35 @@ impl PlaySession {
     #[must_use]
     pub fn score(&self) -> i64 {
         self.song_score_f64.round() as i64
+    }
+
+    /// Sets loaded note-style strumline hitbox height and vertical offset and
+    /// repositions both strumlines cleanly (`PlayState.initStrumlines`).
+    pub fn set_strumline_metrics(&mut self, hitbox_height: f32, offset_y: f32) {
+        self.strum_hitbox_height = hitbox_height.max(1.0);
+        self.strum_offset_y = offset_y;
+        self.reposition_strumlines();
+    }
+
+    /// Toggles or sets downscroll and repositions both strumlines.
+    pub fn set_downscroll(&mut self, is_downscroll: bool) {
+        self.config.is_downscroll = is_downscroll;
+        self.reposition_strumlines();
+    }
+
+    fn reposition_strumlines(&mut self) {
+        let strum_y = if self.config.is_downscroll {
+            VIRTUAL_HEIGHT - self.strum_hitbox_height - STRUMLINE_Y_OFFSET - self.strum_offset_y
+        } else {
+            STRUMLINE_Y_OFFSET
+        };
+        self.player_strumline.is_downscroll = self.config.is_downscroll;
+        self.player_strumline.y = strum_y;
+        self.player_strumline.layout_receptors();
+
+        self.opponent_strumline.is_downscroll = self.config.is_downscroll;
+        self.opponent_strumline.y = strum_y;
+        self.opponent_strumline.layout_receptors();
     }
 
     /// Discards notes skipped when seeking forward/backward (`PlayState.handleSkippedNotes`).
@@ -646,12 +681,13 @@ impl PlaySession {
         &self.score_text_buf[..self.score_text_len]
     }
 
-    /// Queues strumlines, popups, health bar, and HUD text into `sprite_batcher` &
-    /// `mesh_batcher` with zero heap allocations.
+    /// Queues strumlines, popups, health bar, and HUD text across depth-ordered
+    /// batches (`bg_sprites`, `mesh_batcher`, `fg_sprites`) with zero heap allocations.
     #[allow(clippy::too_many_arguments)]
     pub fn draw(
         &self,
-        sprite_batcher: &mut SpriteBatcher,
+        bg_sprites: &mut SpriteBatcher,
+        fg_sprites: &mut SpriteBatcher,
         mesh_batcher: &mut MeshBatcher,
         style: &StrumlineVisualStyle,
         note_assets: Option<&NoteStyleAssets>,
@@ -660,9 +696,9 @@ impl PlaySession {
     ) {
         let song_pos = self.conductor.song_position_ms;
         self.opponent_strumline
-            .draw(sprite_batcher, mesh_batcher, style, note_assets, song_pos);
+            .draw(bg_sprites, fg_sprites, mesh_batcher, style, note_assets, song_pos);
         self.player_strumline
-            .draw(sprite_batcher, mesh_batcher, style, note_assets, song_pos);
+            .draw(bg_sprites, fg_sprites, mesh_batcher, style, note_assets, song_pos);
 
         // Judgement & combo popups.
         for (_, rating) in self.popups.ratings.iter_alive() {
@@ -674,10 +710,10 @@ impl PlaySession {
                 Judgement::Miss => ("MISS", [0.75, 0.15, 0.20, rating.alpha]),
             };
             font.draw_bytes_outlined(
-                sprite_batcher,
+                fg_sprites,
                 font_tex,
                 label.as_bytes(),
-                [rating.x + 80.0, rating.y + 30.0],
+                [(rating.x + 80.0).round(), (rating.y + 30.0).round()],
                 &TextStyle {
                     scale: if font.line_height() <= 10.0 { 4.0 } else { 2.0 },
                     color,
@@ -691,10 +727,10 @@ impl PlaySession {
         for (_, digit) in self.popups.digits.iter_alive() {
             digit_byte[0] = b'0' + (digit.digit % 10);
             font.draw_bytes_outlined(
-                sprite_batcher,
+                fg_sprites,
                 font_tex,
                 &digit_byte,
-                [digit.x, digit.y],
+                [digit.x.round(), digit.y.round()],
                 &TextStyle {
                     scale: if font.line_height() <= 10.0 { 3.5 } else { 1.75 },
                     color: [1.0, 1.0, 1.0, digit.alpha],
@@ -723,14 +759,14 @@ impl PlaySession {
         let split_x = bar_w * (1.0 - player_ratio);
 
         if let Some((hb_tex, _)) = note_assets.and_then(|na| na.health_bar_tex) {
-            sprite_batcher.push(
+            fg_sprites.push(
                 hb_tex,
                 fnfrs_render::BlendMode::Normal,
                 fnfrs_render::FilterMode::Linear,
                 fnfrs_render::SpriteInstance::new([bar_bg_x, bar_bg_y], [bg_w, bg_h]),
             );
         } else {
-            sprite_batcher.push(
+            fg_sprites.push(
                 style.white_texture,
                 fnfrs_render::BlendMode::Normal,
                 fnfrs_render::FilterMode::Nearest,
@@ -740,14 +776,14 @@ impl PlaySession {
         }
 
         // Opponent left fill (`#FF0000`), player right fill (`#66FF33`).
-        sprite_batcher.push(
+        fg_sprites.push(
             style.white_texture,
             fnfrs_render::BlendMode::Normal,
             fnfrs_render::FilterMode::Nearest,
             fnfrs_render::SpriteInstance::new([bar_x, bar_y], [split_x, bar_h])
                 .with_color([1.0, 0.0, 0.0, 1.0]),
         );
-        sprite_batcher.push(
+        fg_sprites.push(
             style.white_texture,
             fnfrs_render::BlendMode::Normal,
             fnfrs_render::FilterMode::Nearest,
@@ -764,10 +800,10 @@ impl PlaySession {
             ..Default::default()
         };
         font.draw_bytes_outlined(
-            sprite_batcher,
+            fg_sprites,
             font_tex,
             self.score_text_bytes(),
-            [bar_bg_x + bg_w - 190.0, bar_bg_y + 30.0],
+            [(bar_bg_x + bg_w - 190.0).round(), (bar_bg_y + 30.0).round()],
             &hud_style,
             [0.0, 0.0, 0.0, 1.0],
         );
