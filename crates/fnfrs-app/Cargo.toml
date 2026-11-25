@@ -10,4 +10,5 @@ path = "src/main.rs"
 
 [dependencies]
 fnfrs-core = { workspace = true }
+fnfrs-audio = { workspace = true }
 anyhow = { workspace = true }
