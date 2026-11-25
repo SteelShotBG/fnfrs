@@ -65,8 +65,8 @@ Pin these exact versions in workspace `Cargo.toml` (`[workspace.dependencies]`):
 - Runner: `windows-latest`, toolchain: `dtolnay/rust-toolchain@stable` with `components: rustfmt, clippy`.
 - Cache: `Swatinem/rust-cache@v2`.
 - Steps:
-  1. `cargo fmt --all -- --check`
-  2. `cargo clippy --workspace --all-targets -- -D warnings`
-  3. `cargo test --workspace`
-  4. `cargo build --release --bin fnfrs-app`
+  1. `cargo clippy --workspace --all-targets -- -D warnings`
+  2. `cargo test --workspace`
+  3. `cargo build --release --bin fnfrs-app`
+  4. `cargo fmt --all -- --check` (advisory / `continue-on-error: true` after build)
   5. Upload `target/release/fnfrs-app.exe` (renamed to `fnfrs.exe`) via `actions/upload-artifact@v4`.

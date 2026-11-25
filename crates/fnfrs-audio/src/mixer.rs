@@ -310,19 +310,13 @@ impl MixerState {
     }
 
     fn trigger_sfx(&mut self, slot: usize, gain: f32) {
-        let target = self
-            .sfx_voices
-            .iter_mut()
-            .find(|v| !v.active)
-            .or_else(|| self.sfx_voices.first_mut());
-        if let Some(voice) = target {
-            *voice = SfxVoice {
-                active: true,
-                slot,
-                cursor: 0,
-                gain,
-            };
-        }
+        let idx = self.sfx_voices.iter().position(|v| !v.active).unwrap_or(0);
+        self.sfx_voices[idx] = SfxVoice {
+            active: true,
+            slot,
+            cursor: 0,
+            gain,
+        };
     }
 }
 

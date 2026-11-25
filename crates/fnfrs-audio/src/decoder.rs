@@ -120,7 +120,7 @@ fn decode_media_source(
     let mut pkt_pcm: Vec<f32> = Vec::new();
 
     while let Some(packet) = format.next_packet()? {
-        if packet.track_id() != track_id {
+        if packet.track_id != track_id {
             continue;
         }
         let decoded = match decoder.decode(&packet) {

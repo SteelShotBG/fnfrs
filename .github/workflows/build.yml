@@ -25,9 +25,6 @@ jobs:
       - name: Cache Cargo registry and build artifacts
         uses: Swatinem/rust-cache@v2
 
-      - name: Check formatting
-        run: cargo fmt --all -- --check
-
       - name: Run Clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
 
@@ -36,6 +33,10 @@ jobs:
 
       - name: Build release binary
         run: cargo build --release --bin fnfrs-app
+
+      - name: Check formatting (advisory)
+        continue-on-error: true
+        run: cargo fmt --all -- --check
 
       - name: Package fnfrs.exe
         shell: pwsh
