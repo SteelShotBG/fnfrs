@@ -117,8 +117,8 @@ impl Default for KeyBinds {
             lanes: [
                 [KeyCode::ArrowLeft, KeyCode::KeyA],
                 [KeyCode::ArrowDown, KeyCode::KeyS],
-                [KeyCode::ArrowUp, KeyCode::KeyW],
-                [KeyCode::ArrowRight, KeyCode::KeyD],
+                [KeyCode::ArrowUp, KeyCode::KeyK],
+                [KeyCode::ArrowRight, KeyCode::KeyL],
             ],
         }
     }
@@ -301,7 +301,7 @@ impl HeldKeys {
     /// Marks `key_code` as held for `dir`.
     pub fn press(&mut self, dir: NoteDirection, key_code: KeyCode) {
         let slots = &mut self.lanes[dir.as_index()];
-        if slots.iter().any(|&k| k == Some(key_code)) {
+        if slots.contains(&Some(key_code)) {
             return;
         }
         if let Some(empty) = slots.iter_mut().find(|k| k.is_none()) {

@@ -398,7 +398,7 @@ impl PlaySession {
         if self.health <= HEALTH_MIN && !self.config.practice_mode && !self.is_player_dying {
             self.is_player_dying = true;
             step_events.died = true;
-            if let Some(engine) = audio.as_deref_mut() {
+            if let Some(engine) = audio {
                 let _ = engine.send(AudioCommand::Pause);
             }
         }
