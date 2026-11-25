@@ -182,8 +182,8 @@ mod tests {
         let (h0_new, v0_new) = pool.acquire().unwrap();
         assert_eq!(h0_new.index, h0.index);
         assert_ne!(h0_new.generation, h0.generation);
-        assert!(pool.get(h0).is_none()); // stale handle rejected
         assert_eq!(*v0_new, 42);
+        assert!(pool.get(h0).is_none()); // stale handle rejected
 
         pool.clear();
         assert_eq!(pool.active_count(), 0);

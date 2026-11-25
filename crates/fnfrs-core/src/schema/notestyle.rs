@@ -84,7 +84,7 @@ pub struct NoteStyleAssetData<T> {
     pub alpha: f32,
     #[serde(default)]
     pub animated: bool,
-    #[serde(default)]
+    #[serde(default = "default_none")]
     pub data: Option<T>,
 }
 
@@ -199,4 +199,7 @@ fn default_variance() -> u32 {
 }
 fn default_blend() -> String {
     "normal".to_string()
+}
+fn default_none<T>() -> Option<T> {
+    None
 }
