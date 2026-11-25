@@ -215,12 +215,11 @@ fn variation_suffix(variation: Option<&str>) -> String {
 /// Checks `<exe_dir>/assets` first, then `<cwd>/assets`.
 #[must_use]
 pub fn discover_assets_root() -> Option<PathBuf> {
-    if let Ok(exe_path) = std::env::current_exe() {
-        if let Some(exe_dir) = exe_path.parent() {
-            let candidate = exe_dir.join("assets");
-            if candidate.is_dir() {
-                return Some(candidate);
-            }
+    let exe_path = std::env::current_exe().ok();
+    if let Some(exe_dir) = exe_path.as_deref().and_then(Path::parent) {
+        let candidate = exe_dir.join("assets");
+        if candidate.is_dir() {
+            return Some(candidate);
         }
     }
 

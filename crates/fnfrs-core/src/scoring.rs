@@ -273,7 +273,7 @@ pub fn format_score_into(buf: &mut [u8; 32], score: i64, botplay: bool) -> &str 
     } else {
         let mut digit_count = 0_usize;
         while val > 0 && d_len < digits_rev.len() {
-            if digit_count > 0 && digit_count % 3 == 0 {
+            if digit_count > 0 && digit_count.is_multiple_of(3) {
                 digits_rev[d_len] = b',';
                 d_len += 1;
             }
