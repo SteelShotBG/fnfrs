@@ -95,7 +95,8 @@ impl GpuContext {
     /// Initializes `wgpu` synchronously on `window` using `pollster::block_on`.
     pub fn new(window: Arc<Window>) -> Result<Self, GpuError> {
         let size = window.inner_size();
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::default());
+        let instance =
+            wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
         let surface = instance.create_surface(window)?;
 
         let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
@@ -148,6 +149,7 @@ impl GpuContext {
             alpha_mode,
             view_formats: vec![],
             desired_maximum_frame_latency: 2,
+            color_space: wgpu::SurfaceColorSpace::Auto,
         };
         surface.configure(&device, &config);
 
@@ -291,7 +293,6 @@ impl GpuContext {
             format: wgpu::TextureFormat::Rgba8UnormSrgb,
             usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
             view_formats: &[],
-            texture_binding_view_dimension: None,
         });
 
         self.queue.write_texture(

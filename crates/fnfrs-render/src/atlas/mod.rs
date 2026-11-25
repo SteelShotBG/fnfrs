@@ -157,6 +157,7 @@ impl DoubleEndedIterator for PrefixFrames<'_> {
 
 impl FusedIterator for PrefixFrames<'_> {}
 
+#[derive(Debug)]
 pub(crate) struct FrameLookupIndex {
     pub exact: FxHashMap<String, usize>,
     pub prefixes: FxHashMap<String, Vec<usize>>,

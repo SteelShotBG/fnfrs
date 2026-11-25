@@ -28,11 +28,13 @@ Pin these exact versions in workspace `Cargo.toml` (`[workspace.dependencies]`):
 
 ### Verified Breaking API Notes (Do Not Use Stale Signatures)
 - **`wgpu 30.0.2`**:
-  - `wgpu::Instance::new(wgpu::InstanceDescriptor::default())` takes `InstanceDescriptor` **by value**.
+  - `wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env())` takes `InstanceDescriptor` **by value** (does not implement `Default`).
+  - `SurfaceConfiguration` includes `color_space: wgpu::SurfaceColorSpace::Auto`.
   - `adapter.request_device(&wgpu::DeviceDescriptor { .. })` takes **1 argument** (no trace path parameter).
   - `RenderPipelineDescriptor` and `RenderPassDescriptor` include `multiview_mask: Option<NonZeroU32>` (use `..Default::default()` or set `multiview_mask: None`).
   - `RenderPassColorAttachment` includes `depth_slice: Option<u32>`.
   - `queue.write_texture(TexelCopyTextureInfo { .. }, data, TexelCopyBufferLayout { .. }, Extent3d { .. })`.
+  - `queue.present(frame)` replaces `frame.present()`.
 - **`symphonia 0.6.1`**:
   - `Probe` lives in `symphonia::core::formats::probe::Probe` (returned by `symphonia::default::get_probe()`).
   - `probe.probe(&hint, mss, fmt_opts, meta_opts)` returns `Result<Box<dyn FormatReader>>` directly (no `ProbeResult` struct).

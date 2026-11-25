@@ -18,7 +18,7 @@ pub const SUSTAIN_QUAD_INDICES: [u32; 12] = [0, 1, 2, 1, 2, 3, 4, 5, 6, 5, 6, 7]
 
 /// Per-vertex GPU payload for textured, tinted 2D triangle meshes.
 #[repr(C)]
-#[derive(Debug, Clone, Copy, Pod, Zeroable)]
+#[derive(Debug, Clone, Copy, Default, Pod, Zeroable)]
 pub struct MeshVertex {
     pub pos: [f32; 2],
     pub uv: [f32; 2],
