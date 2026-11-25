@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "crates/fnfrs-core",
     "crates/fnfrs-audio",
+    "crates/fnfrs-render",
     "crates/fnfrs-app",
 ]
 
@@ -14,6 +15,15 @@ license = "MIT"
 [workspace.dependencies]
 fnfrs-core = { path = "crates/fnfrs-core" }
 fnfrs-audio = { path = "crates/fnfrs-audio" }
+fnfrs-render = { path = "crates/fnfrs-render" }
+wgpu = "30.0.2"
+winit = "0.30.13"
+pollster = "1.0.3"
+glam = "0.34.3"
+bytemuck = { version = "1.25.2", features = ["derive"] }
+image = { version = "0.25.10", default-features = false, features = ["png"] }
+roxmltree = "0.21.2"
+fontdue = "0.9.5"
 cpal = "0.18.2"
 symphonia = { version = "0.6.1", features = ["ogg", "vorbis", "mp3", "wav", "pcm"] }
 rubato = "5.1.0"
