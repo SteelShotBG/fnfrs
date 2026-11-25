@@ -19,6 +19,10 @@ use thiserror::Error;
 use crate::batch::{BlendMode, FilterMode, SpriteBatcher, SpriteInstance};
 use crate::gpu::{GpuContext, GpuError, TextureHandle};
 
+/// Default alpha cutoff threshold used to convert anti-aliased BMFont sheets
+/// (such as `vcr-bmp.png`) into crisp binary-alpha pixel glyphs.
+pub const DEFAULT_BMFONT_ALPHA_THRESHOLD: u8 = 112;
+
 /// Errors produced when loading or parsing bitmap or TTF/OTF fonts.
 #[derive(Debug, Error)]
 pub enum FontError {
@@ -30,6 +34,12 @@ pub enum FontError {
 
     #[error("failed to parse TTF/OTF font: {0}")]
     TtfParse(String),
+
+    #[error("failed to decode font PNG texture: {0}")]
+    Image(#[from] image::ImageError),
+
+    #[error("failed to upload font texture to GPU: {0}")]
+    Gpu(#[from] GpuError),
 }
 
 /// Horizontal alignment for multi-line or single-line text layout.
@@ -211,6 +221,28 @@ impl BitmapFont {
             image.height,
             &image.rgba8,
         )?;
+        Ok((font, tex))
+    }
+
+    /// Loads an AngelCode BMFont (`.fnt` + `.png` bytes) and uploads its texture
+    /// to `gpu`. When `crisp_alpha` is `true`, anti-aliased alpha fringes are
+    /// snapped to binary `0` or `255` (`>= DEFAULT_BMFONT_ALPHA_THRESHOLD`) so
+    /// bitmap fonts such as `vcr-bmp` render with a grounded pixel-art edge.
+    pub fn create_bmfont_on_gpu(
+        gpu: &mut GpuContext,
+        label: Option<&str>,
+        fnt_data: &str,
+        png_bytes: &[u8],
+        crisp_alpha: bool,
+    ) -> Result<(Self, TextureHandle), FontError> {
+        let rgba_img = image::load_from_memory(png_bytes)?.into_rgba8();
+        let (width, height) = rgba_img.dimensions();
+        let mut raw = rgba_img.into_raw();
+        if crisp_alpha {
+            crisp_alpha_rgba8(&mut raw, DEFAULT_BMFONT_ALPHA_THRESHOLD);
+        }
+        let tex = gpu.create_texture_rgba8(label, width, height, &raw)?;
+        let font = Self::from_bmfont(fnt_data, Some(width), Some(height))?;
         Ok((font, tex))
     }
 
@@ -952,12 +984,15 @@ impl BitmapFont {
     ) {
         let snap = matches!(filter, FilterMode::Nearest);
         self.layout_bytes(bytes, pos[0], pos[1], style, |quad| {
-            let draw_pos = if snap {
-                [quad.x.round(), quad.y.round()]
+            let (draw_pos, draw_size) = if snap {
+                (
+                    [quad.x.round(), quad.y.round()],
+                    [quad.width.round(), quad.height.round()],
+                )
             } else {
-                [quad.x, quad.y]
+                ([quad.x, quad.y], [quad.width, quad.height])
             };
-            let instance = SpriteInstance::new(draw_pos, [quad.width, quad.height])
+            let instance = SpriteInstance::new(draw_pos, draw_size)
                 .with_uv_rect(quad.uv_rect)
                 .with_color(style.color);
             batcher.push(texture, BlendMode::Normal, filter, instance);
@@ -965,7 +1000,8 @@ impl BitmapFont {
     }
 
     /// Queues a stack-formatted byte slice directly into `batcher` with a crisp
-    /// 8-neighbor 1px outline (`FlxTextBorderStyle.OUTLINE`) and zero heap allocations.
+    /// 8-neighbor scaled 1px outline (`FlxTextBorderStyle.OUTLINE`) and zero heap
+    /// allocations.
     pub fn draw_bytes_outlined(
         &self,
         batcher: &mut SpriteBatcher,
@@ -978,6 +1014,7 @@ impl BitmapFont {
         let mut outline_style = *style;
         outline_style.color = outline_color;
         outline_style.color[3] *= style.color[3];
+        let border = style.scale.round().max(1.0);
         const OFFSETS: [[f32; 2]; 8] = [
             [-1.0, -1.0],
             [0.0, -1.0],
@@ -993,8 +1030,8 @@ impl BitmapFont {
                 batcher,
                 texture,
                 bytes,
-                pos[0] + off[0],
-                pos[1] + off[1],
+                pos[0] + off[0] * border,
+                pos[1] + off[1] * border,
                 &outline_style,
             );
         }
@@ -1130,6 +1167,25 @@ impl<const N: usize> core::fmt::Write for StackTextBuffer<N> {
         self.buf[self.len..self.len + copy_len].copy_from_slice(&bytes[..copy_len]);
         self.len += copy_len;
         Ok(())
+    }
+}
+
+/// Snaps anti-aliased RGBA8 font pixels to crisp binary alpha (`0` or `255`)
+/// around `threshold` so bitmap fonts such as AngelCode `vcr-bmp` render with
+/// hard pixel edges.
+pub fn crisp_alpha_rgba8(rgba8: &mut [u8], threshold: u8) {
+    for px in rgba8.chunks_exact_mut(4) {
+        if px[3] >= threshold {
+            px[0] = 255;
+            px[1] = 255;
+            px[2] = 255;
+            px[3] = 255;
+        } else {
+            px[0] = 0;
+            px[1] = 0;
+            px[2] = 0;
+            px[3] = 0;
+        }
     }
 }
 
@@ -1629,5 +1685,25 @@ kerning first=65 second=65 amount=-1
         assert_eq!(quads.len(), 2);
         // Centered around x=100, line width = 24 -> starts at 88.0.
         approx_eq(quads[0].x, 88.0);
+    }
+
+    #[test]
+    fn crisp_alpha_thresholds_bmfont_edges() {
+        let mut rgba = [
+            255, 255, 255, 39, // faint AA fringe -> cleared
+            255, 255, 255, 111, // just below threshold -> cleared
+            255, 255, 255, 112, // at threshold -> solid white
+            255, 255, 255, 234, // solid stroke -> solid white
+        ];
+        crisp_alpha_rgba8(&mut rgba, DEFAULT_BMFONT_ALPHA_THRESHOLD);
+        assert_eq!(
+            rgba,
+            [
+                0, 0, 0, 0, //
+                0, 0, 0, 0, //
+                255, 255, 255, 255, //
+                255, 255, 255, 255,
+            ]
+        );
     }
 }
