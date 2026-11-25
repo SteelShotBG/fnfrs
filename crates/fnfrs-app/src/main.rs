@@ -278,10 +278,8 @@ impl ApplicationHandler for App {
                     state.window.request_redraw();
                 }
             }
-            WindowEvent::RedrawRequested => {
-                if !state.minimized && !state.occluded {
-                    render_game_frame(state, self.audio.as_mut(), event_loop);
-                }
+            WindowEvent::RedrawRequested if !state.minimized && !state.occluded => {
+                render_game_frame(state, self.audio.as_mut(), event_loop);
             }
             _ => {}
         }
@@ -563,8 +561,8 @@ fn create_session(loaded: &LoadedChart, config: PlayConfig) -> PlaySession {
     let mut player_notes = Vec::new();
     let mut opponent_notes = Vec::new();
     for step in 0..16 {
-        let time = 1200.0 + (step as f64) * 500.0;
-        let dir = (step % 4) as i32;
+        let time = 1200.0 + f64::from(step) * 500.0;
+        let dir = step % 4;
         opponent_notes.push(SongNoteData {
             time,
             data: dir + 4,
