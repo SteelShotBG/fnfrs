@@ -1,0 +1,13 @@
+[package]
+name = "fnfrs-app"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "fnfrs-app"
+path = "src/main.rs"
+
+[dependencies]
+fnfrs-core = { workspace = true }
+anyhow = { workspace = true }

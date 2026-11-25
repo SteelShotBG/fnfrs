@@ -1,0 +1,7 @@
+/target/
+/assets/
+*.exe
+*.pdb
+.DS_Store
+Thumbs.db
+Cargo.lock
