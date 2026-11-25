@@ -163,7 +163,7 @@ impl SampleClock {
 
     /// Monotonic transport generation counter incremented on load/unload/seek.
     #[must_use]
-    pub fn generation(&self) -> u32 {
+    pub fn generation(&self) -> u64 {
         self.shared.generation()
     }
 }

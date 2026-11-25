@@ -44,7 +44,7 @@ struct RuntimeState {
     loaded_chart: LoadedChart,
 
     has_song_audio: bool,
-    pending_seek_gen: Option<u32>,
+    pending_seek_gen: Option<u64>,
     minimized: bool,
     occluded: bool,
     start_time: Instant,
