@@ -934,8 +934,7 @@ impl BitmapFont {
             texture,
             FilterMode::Nearest,
             bytes,
-            origin_x,
-            origin_y,
+            [origin_x, origin_y],
             style,
         );
     }
@@ -948,11 +947,10 @@ impl BitmapFont {
         texture: TextureHandle,
         filter: FilterMode,
         bytes: &[u8],
-        origin_x: f32,
-        origin_y: f32,
+        pos: [f32; 2],
         style: &TextStyle,
     ) {
-        self.layout_bytes(bytes, origin_x, origin_y, style, |quad| {
+        self.layout_bytes(bytes, pos[0], pos[1], style, |quad| {
             let instance = SpriteInstance::new([quad.x, quad.y], [quad.width, quad.height])
                 .with_uv_rect(quad.uv_rect)
                 .with_color(style.color);
@@ -984,19 +982,10 @@ impl BitmapFont {
         texture: TextureHandle,
         filter: FilterMode,
         text: &str,
-        origin_x: f32,
-        origin_y: f32,
+        pos: [f32; 2],
         style: &TextStyle,
     ) {
-        self.draw_bytes_with_filter(
-            batcher,
-            texture,
-            filter,
-            text.as_bytes(),
-            origin_x,
-            origin_y,
-            style,
-        );
+        self.draw_bytes_with_filter(batcher, texture, filter, text.as_bytes(), pos, style);
     }
 
     fn measure_line_bytes(&self, line: &[u8], scale: f32, letter_spacing: f32) -> f32 {
