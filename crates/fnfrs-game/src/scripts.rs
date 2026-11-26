@@ -96,7 +96,7 @@ pub struct ScriptStepOutput {
 }
 
 impl ScriptStepOutput {
-    fn push(&mut self, slot: usize, gain: f32) {
+    pub fn push(&mut self, slot: usize, gain: f32) {
         if self.count < self.cues.len() {
             self.cues[self.count] = Some(ScriptSfxCue { slot, gain });
             self.count += 1;
@@ -1933,9 +1933,9 @@ impl NativeScriptHost {
         &mut self,
         event_kind: &str,
         value: &serde_json::Value,
-        mut stage: Option<&mut Stage>,
-        mut bf: Option<&mut BaseCharacter>,
-        mut dad: Option<&mut BaseCharacter>,
+        stage: Option<&mut Stage>,
+        bf: Option<&mut BaseCharacter>,
+        dad: Option<&mut BaseCharacter>,
         cam_flash_dur: &mut Option<f32>,
     ) -> ScriptStepOutput {
         let mut out = ScriptStepOutput::default();
@@ -3133,7 +3133,7 @@ impl NativeScriptHost {
                 *dust_time_s += dt;
                 if let Some(y) = yunjin.as_deref_mut() {
                     y.update(dt, beat_length_ms, false);
-                    if *kick_waiting_door && y.current_frame() >= 23 {
+                    if *kick_waiting_door && y.active_frame_snapshot().is_some_and(|(_, f, _)| f >= 23) {
                         *kick_waiting_door = false;
                         if let Some(ref mut st) = stage {
                             if let Some(d) = st.get_named_prop_mut("truckDoor") {

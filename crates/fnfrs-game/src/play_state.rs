@@ -1329,9 +1329,9 @@ impl PlayScene {
                     let c = scripts.on_song_event(
                         event_kind,
                         value,
-                        stage.as_deref_mut(),
-                        bf.as_deref_mut(),
-                        dad.as_deref_mut(),
+                        stage.as_mut(),
+                        bf.as_mut(),
+                        dad.as_mut(),
                         &mut pending_flash_dur,
                     );
                     for cue in c.cues.iter().take(c.count).flatten() {

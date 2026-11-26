@@ -1,6 +1,7 @@
 //! V-Slice Week 6 Dialogue & Conversation system (`Conversation.hx` / `DialogueBox.hx`).
 
 use std::collections::HashMap;
+use std::fmt::Write as _;
 use std::fs;
 
 use fnfrs_core::constants::{VIRTUAL_HEIGHT, VIRTUAL_WIDTH};

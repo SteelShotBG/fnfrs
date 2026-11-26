@@ -1561,6 +1561,138 @@ pub fn compute_accuracy_percent(tallies: &ScoreTallies) -> f64 {
     ((weighted / f64::from(denom)) * 100.0).clamp(0.0, 100.0)
 }
 
+#[derive(Debug, Clone)]
+struct ResultsVisuals {
+    char_atlas: Option<AnimateAtlas>,
+    char_textures: Vec<(TextureHandle, [f32; 2])>,
+    char_bounds: ([f32; 2], [f32; 2]),
+    char_parts: Vec<EvaluatedPart>,
+    top_bar_tex: Option<(TextureHandle, [f32; 2])>,
+    diff_tex: Option<(TextureHandle, [f32; 2])>,
+    rank_tex: Option<(TextureHandle, [f32; 2])>,
+}
+
+impl ResultsVisuals {
+    fn load(
+        assets: &AssetLocator,
+        gpu: &mut GpuContext,
+        difficulty: &str,
+        rank: ResultsRank,
+        is_pico: bool,
+    ) -> Self {
+        let top_bar_tex = crate::character::upload_png_path(
+            gpu,
+            Some("results/topBar"),
+            &assets.image("resultScreen/topBar"),
+        );
+
+        let diff_lower = difficulty.to_ascii_lowercase();
+        let diff_key = format!("resultScreen/diff_{diff_lower}");
+        let diff_tex =
+            crate::character::upload_png_path(gpu, Some(&diff_key), &assets.image(&diff_key));
+
+        let rank_slug = match rank {
+            ResultsRank::Loss => "loss",
+            ResultsRank::Good => "good",
+            ResultsRank::Great => "great",
+            ResultsRank::Excellent => "excellent",
+            ResultsRank::Perfect => "perfect",
+            ResultsRank::PerfectGold => "perfectGold",
+        };
+        let rank_key = format!("resultScreen/rankText/rankText{rank_slug}");
+        let rank_tex =
+            crate::character::upload_png_path(gpu, Some(&rank_key), &assets.image(&rank_key));
+
+        let char_dir_key = if is_pico {
+            match rank {
+                ResultsRank::Loss => "resultScreen/results-pico/resultsSHIT",
+                ResultsRank::Good => "resultScreen/results-pico/resultsGOOD",
+                ResultsRank::Great => "resultScreen/results-pico/resultsGREAT",
+                ResultsRank::Excellent => "resultScreen/results-pico/resultsEXCELLENT",
+                ResultsRank::Perfect | ResultsRank::PerfectGold => {
+                    "resultScreen/results-pico/resultsPERFECT"
+                }
+            }
+        } else {
+            match rank {
+                ResultsRank::Loss => "resultScreen/results-bf/resultsSHIT",
+                ResultsRank::Good => "resultScreen/results-bf/resultsGOOD",
+                ResultsRank::Great => "resultScreen/results-bf/resultsGREAT",
+                ResultsRank::Excellent => "resultScreen/results-bf/resultsEXCELLENT",
+                ResultsRank::Perfect | ResultsRank::PerfectGold => {
+                    "resultScreen/results-bf/resultsPERFECT"
+                }
+            }
+        };
+
+        let mut char_atlas = None;
+        let mut char_textures = Vec::new();
+        let mut char_bounds = ([0.0, 0.0], [0.0, 0.0]);
+        let mut char_parts = Vec::new();
+
+        let dir = assets.animate_atlas_dir(char_dir_key);
+        if let Ok(anim_json) = fs::read_to_string(dir.join("Animation.json")) {
+            let mut sm_entries: Vec<(u32, std::path::PathBuf)> = Vec::new();
+            if let Ok(rd) = fs::read_dir(&dir) {
+                for entry in rd.flatten() {
+                    let p = entry.path();
+                    if let Some(name) = p.file_name().and_then(|n| n.to_str()) {
+                        if name.starts_with("spritemap") && name.ends_with(".json") {
+                            let num = name["spritemap".len()..name.len() - ".json".len()]
+                                .parse::<u32>()
+                                .unwrap_or(0);
+                            sm_entries.push((num, p));
+                        }
+                    }
+                }
+            }
+            sm_entries.sort_by_key(|(n, _)| *n);
+            let mut sm_strings = Vec::with_capacity(sm_entries.len());
+            for (_, p) in &sm_entries {
+                if let Ok(s) = fs::read_to_string(p) {
+                    sm_strings.push(s);
+                }
+            }
+            if sm_strings.len() == sm_entries.len() && !sm_strings.is_empty() {
+                let sm_refs: Vec<&str> = sm_strings.iter().map(String::as_str).collect();
+                if let Ok(atlas) = AnimateAtlas::from_json_strs(&anim_json, &sm_refs) {
+                    let mut textures = Vec::with_capacity(atlas.spritemaps().len());
+                    let mut all_ok = true;
+                    for sm in atlas.spritemaps() {
+                        if let Some(tex) = crate::character::upload_png_path(
+                            gpu,
+                            Some(&sm.image),
+                            &dir.join(&sm.image),
+                        ) {
+                            textures.push(tex);
+                        } else {
+                            all_ok = false;
+                            break;
+                        }
+                    }
+                    if all_ok {
+                        char_bounds = atlas.full_timeline_bounds();
+                        char_parts = Vec::with_capacity(64);
+                        atlas.evaluate_frame(0, &mut char_parts);
+                        char_textures = textures;
+                        char_atlas = Some(atlas);
+                    }
+                }
+            }
+        }
+
+        Self {
+            char_atlas,
+            char_textures,
+            char_bounds,
+            char_parts,
+            top_bar_tex,
+            diff_tex,
+            rank_tex,
+        }
+    }
+}
+
 /// Zero-allocation post-song results screen (`ResultState.hx`).
 #[derive(Debug, Clone)]
 pub struct ResultsSummaryState {
@@ -1574,6 +1706,7 @@ pub struct ResultsSummaryState {
     pub accuracy_percent: f64,
     pub is_new_highscore: bool,
     pub elapsed_s: f32,
+    visuals: Option<Box<ResultsVisuals>>,
 }
 
 impl Default for ResultsSummaryState {

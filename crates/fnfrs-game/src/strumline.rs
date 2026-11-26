@@ -4,7 +4,7 @@
 
 use fnfrs_core::constants::{
     GHOST_TAP_DELAY, HIT_WINDOW_MS, KEY_COUNT, NOTE_SPACING, NOTE_SPLASH_CAP, PIXELS_PER_MS,
-    STRUMLINE_SIZE, VIRTUAL_HEIGHT,
+    STRUMLINE_SIZE, VIRTUAL_HEIGHT, VIRTUAL_WIDTH,
 };
 use fnfrs_core::pool::{FixedPool, PoolHandle};
 use fnfrs_core::schema::song::SongNoteData;

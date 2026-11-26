@@ -52,7 +52,7 @@ pub struct FreeplayScreenState {
     playable_char: String,
     fav_icon: Option<(TextureHandle, [f32; 2])>,
     pub char_select_requested: bool,
-    pub favorite_toggle_requested: Option<String>,
+    pub favorite_toggle_requested: Option<(String, String)>,
     pub active_song_highscore: i64,
     pub active_song_rank: String,
     pub active_song_favorited: bool,

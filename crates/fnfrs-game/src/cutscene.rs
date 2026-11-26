@@ -49,7 +49,7 @@ enum ActiveCutsceneKind {
 #[derive(Debug, Default)]
 pub struct CutsceneController {
     kind: Option<ActiveCutsceneKind>,
-    white_tex: TextureHandle,
+    white_tex: Option<TextureHandle>,
 }
 
 impl CutsceneController {
@@ -83,7 +83,7 @@ impl CutsceneController {
         gpu: &mut GpuContext,
         volume: f32,
     ) -> CutsceneAudioRequest {
-        self.white_tex = gpu.white_texture();
+        self.white_tex = Some(gpu.white_texture());
         self.kind = None;
         let song = song_id.to_ascii_lowercase();
         let is_pico = variation.is_some_and(|v| v.eq_ignore_ascii_case("pico"));
@@ -132,7 +132,6 @@ impl CutsceneController {
                         flip_x: false,
                         flip_y: false,
                         frame_rate: 24,
-                        is_sing: false,
                         anim_type: String::new(),
                         render_type: String::new(),
                         atlas_settings: None,
@@ -196,7 +195,7 @@ impl CutsceneController {
         gpu: &mut GpuContext,
         volume: f32,
     ) -> CutsceneAudioRequest {
-        self.white_tex = gpu.white_texture();
+        self.white_tex = Some(gpu.white_texture());
         self.kind = None;
         let song = song_id.to_ascii_lowercase();
         let is_erect = variation.is_some_and(|v| v.eq_ignore_ascii_case("erect"));
@@ -387,7 +386,9 @@ impl CutsceneController {
         };
         match kind {
             ActiveCutsceneKind::Video(vid) => {
-                vid.draw(batcher, self.white_tex, font, font_tex);
+                if let Some(white_tex) = self.white_tex {
+                    vid.draw(batcher, white_tex, font, font_tex);
+                }
             }
             ActiveCutsceneKind::Dialogue(dlg) => {
                 dlg.draw(batcher, font, font_tex);
@@ -399,13 +400,15 @@ impl CutsceneController {
                     (1.0 - (*elapsed_s - 0.1) / 1.8).clamp(0.0, 1.0)
                 };
                 if alpha > 0.01 {
-                    batcher.push(
-                        self.white_tex,
-                        BlendMode::Normal,
-                        FilterMode::Nearest,
-                        SpriteInstance::new([0.0, 0.0], [VIRTUAL_WIDTH, VIRTUAL_HEIGHT])
-                            .with_color([0.0, 0.0, 0.0, alpha]),
-                    );
+                    if let Some(white_tex) = self.white_tex {
+                        batcher.push(
+                            white_tex,
+                            BlendMode::Normal,
+                            FilterMode::Nearest,
+                            SpriteInstance::new([0.0, 0.0], [VIRTUAL_WIDTH, VIRTUAL_HEIGHT])
+                                .with_color([0.0, 0.0, 0.0, alpha]),
+                        );
+                    }
                 }
             }
             ActiveCutsceneKind::Week6SenpaiIntro { elapsed_s, dialogue } => {
@@ -413,13 +416,15 @@ impl CutsceneController {
                     let t = ((*elapsed_s - 0.25) / 1.75).clamp(0.0, 1.0);
                     let snapped = (t * 8.0).floor() / 8.0;
                     let a = 1.0 - snapped;
-                    batcher.push(
-                        self.white_tex,
-                        BlendMode::Normal,
-                        FilterMode::Nearest,
-                        SpriteInstance::new([0.0, 0.0], [VIRTUAL_WIDTH, VIRTUAL_HEIGHT])
-                            .with_color([0.0, 0.0, 0.0, a]),
-                    );
+                    if let Some(white_tex) = self.white_tex {
+                        batcher.push(
+                            white_tex,
+                            BlendMode::Normal,
+                            FilterMode::Nearest,
+                            SpriteInstance::new([0.0, 0.0], [VIRTUAL_WIDTH, VIRTUAL_HEIGHT])
+                                .with_color([0.0, 0.0, 0.0, a]),
+                        );
+                    }
                 } else {
                     dialogue.draw(batcher, font, font_tex);
                 }
@@ -432,13 +437,15 @@ impl CutsceneController {
                 ..
             } => {
                 if *elapsed_s < 4.2 {
-                    batcher.push(
-                        self.white_tex,
-                        BlendMode::Normal,
-                        FilterMode::Nearest,
-                        SpriteInstance::new([0.0, 0.0], [VIRTUAL_WIDTH, VIRTUAL_HEIGHT])
-                            .with_color([1.0, 0.106, 0.192, 1.0]),
-                    );
+                    if let Some(white_tex) = self.white_tex {
+                        batcher.push(
+                            white_tex,
+                            BlendMode::Normal,
+                            FilterMode::Nearest,
+                            SpriteInstance::new([0.0, 0.0], [VIRTUAL_WIDTH, VIRTUAL_HEIGHT])
+                                .with_color([1.0, 0.106, 0.192, 1.0]),
+                        );
+                    }
                     if let Some(bank) = senpai_bank {
                         if let Some(crate::character::LoadedAtlasSource::Sparrow {
                             texture,
@@ -483,13 +490,15 @@ impl CutsceneController {
             ActiveCutsceneKind::EggnogErectOutro { elapsed_s, .. } => {
                 if *elapsed_s >= 14.5 {
                     let fade = ((*elapsed_s - 14.5) / 1.0).clamp(0.0, 1.0);
-                    batcher.push(
-                        self.white_tex,
-                        BlendMode::Normal,
-                        FilterMode::Nearest,
-                        SpriteInstance::new([0.0, 0.0], [VIRTUAL_WIDTH, VIRTUAL_HEIGHT])
-                            .with_color([0.0, 0.0, 0.0, fade]),
-                    );
+                    if let Some(white_tex) = self.white_tex {
+                        batcher.push(
+                            white_tex,
+                            BlendMode::Normal,
+                            FilterMode::Nearest,
+                            SpriteInstance::new([0.0, 0.0], [VIRTUAL_WIDTH, VIRTUAL_HEIGHT])
+                                .with_color([0.0, 0.0, 0.0, fade]),
+                        );
+                    }
                 }
             }
         }

@@ -1130,6 +1130,20 @@ impl<const N: usize> StackTextBuffer<N> {
         self.len = 0;
     }
 
+    /// Returns the number of written bytes.
+    #[inline]
+    #[must_use]
+    pub const fn len(&self) -> usize {
+        self.len
+    }
+
+    /// Returns `true` if the buffer contains zero bytes.
+    #[inline]
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
     /// Returns the written bytes slice.
     #[inline]
     #[must_use]
