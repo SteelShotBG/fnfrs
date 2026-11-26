@@ -1512,7 +1512,7 @@ fn render_app_frame(
     let snap_dur = gp.song_duration_ms.unwrap_or(0.0);
     let snap_beat = gp.scene.session.conductor.current_beat;
     let snap_step = gp.scene.session.conductor.current_step;
-    let snap_bpm = gp.scene.session.conductor.bpm;
+    let snap_bpm = gp.scene.session.conductor.bpm();
     let snap_cam = gp.scene.camera_rig.cam_game.scroll;
     let snap_zoom = gp.scene.camera_rig.cam_game.effective_zoom();
     let snap_bot = gp.scene.session.config.is_botplay;
