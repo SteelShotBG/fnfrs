@@ -1,5 +1,6 @@
 //! V-Slice Title Screen (`TitleState.hx`).
 
+use std::fmt::Write as _;
 use std::fs;
 
 use fnfrs_core::constants::{VIRTUAL_HEIGHT, VIRTUAL_WIDTH};
@@ -172,14 +173,12 @@ impl TitleScreenState {
             } else {
                 "Idle"
             };
-            let span = atlas
-                .label(label)
-                .or_else(|| atlas.labels().first().cloned())
-                .map(|s| (s.start, s.end))
-                .unwrap_or((0, atlas.total_frames().saturating_sub(1)));
-            let len = span.1.saturating_sub(span.0) + 1;
-            let local = ((self.title_text_time_s * 24.0).floor() as u32) % len.max(1);
-            atlas.evaluate_frame(span.0 + local, &mut self.title_text_parts);
+            let (start, len) = atlas
+                .label_span(label)
+                .map(|s| (s.start, s.duration.max(1)))
+                .unwrap_or((0, atlas.total_frames().max(1)));
+            let local = ((self.title_text_time_s * 24.0).floor() as u32) % len;
+            atlas.evaluate_frame(start + local, &mut self.title_text_parts);
         }
 
         // 102 BPM beat tracker (`freakyMenu-metadata.json`).
@@ -313,7 +312,7 @@ impl TitleScreenState {
     fn push_intro_line(&mut self, line: &str) {
         if self.intro_line_count < self.intro_lines.len() {
             self.intro_lines[self.intro_line_count].clear();
-            let _ = self.intro_lines[self.intro_line_count].push_str(line.trim());
+            let _ = write!(self.intro_lines[self.intro_line_count], "{}", line.trim());
             self.intro_line_count += 1;
         }
     }
@@ -501,7 +500,7 @@ fn load_title_text_atlas(
     let Some((tw, th)) = gpu.texture_size(tex) else {
         return (None, Vec::new(), ([0.0, 0.0], [100.0, 100.0]));
     };
-    let Ok(atlas) = AnimateAtlas::from_slices(&anim_json, &[(sm_json.as_str(), tw, th)]) else {
+    let Ok(atlas) = AnimateAtlas::from_json_strs(&anim_json, &[sm_json.as_str()]) else {
         return (None, Vec::new(), ([0.0, 0.0], [100.0, 100.0]));
     };
     let bounds = atlas.full_timeline_bounds();

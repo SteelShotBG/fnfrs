@@ -396,6 +396,7 @@ impl StageProp {
             flip_y: data.flip_y,
             blend,
             color: prop_color,
+            adjust_color: None,
             is_pixel: data.is_pixel,
             is_hud: false,
             visible: true,

@@ -110,7 +110,7 @@ impl StoryMenuScreenState {
                     .animations
                     .iter()
                     .find(|a| a.name.eq_ignore_ascii_case("confirm"));
-                let fps = idle_anim.map_or(24.0, |a| a.frame_rate.max(1.0));
+                let fps = idle_anim.map_or(24.0, |a| a.frame_rate.max(1) as f32);
                 let (tex, idle_frames, confirm_frames) = match loaded {
                     Some((t, sz, atlas)) => {
                         let idle_pfx = idle_anim
