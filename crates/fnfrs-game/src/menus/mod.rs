@@ -174,7 +174,7 @@ pub fn discover_freeplay_songs(assets: &AssetLocator) -> Vec<FreeplaySongEntry> 
         let erect_meta = read_song_meta(&dir.join(format!("{song_id}-metadata-erect.json")));
         let pico_meta = read_song_meta(&dir.join(format!("{song_id}-metadata-pico.json")));
 
-        let Some(ref primary) = base_meta.as_ref().or(erect_meta.as_ref()).or(pico_meta.as_ref())
+        let Some(primary) = base_meta.as_ref().or(erect_meta.as_ref()).or(pico_meta.as_ref())
         else {
             continue;
         };

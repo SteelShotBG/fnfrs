@@ -92,8 +92,10 @@ impl TitleScreenState {
             None => (None, Vec::new(), Vec::new()),
         };
 
-        let (title_text_atlas, title_text_textures, title_text_bounds) =
-            load_title_text_atlas(assets, gpu);
+        let title_text = load_title_text_atlas(assets, gpu);
+        let title_text_atlas = title_text.atlas;
+        let title_text_textures = title_text.textures;
+        let title_text_bounds = title_text.bounds;
         let ng_tex = load_menu_image(assets, gpu, "newgrounds_logo");
         let wacky = load_random_wacky(assets);
 
@@ -337,8 +339,13 @@ impl TitleScreenState {
         let hsv = [self.hue_shift, 0.0, 0.0];
 
         if !self.skipped_intro {
-            for idx in 0..self.intro_line_count {
-                let text = self.intro_lines[idx].as_str();
+            for (idx, line) in self
+                .intro_lines
+                .iter()
+                .take(self.intro_line_count)
+                .enumerate()
+            {
+                let text = line.as_str();
                 if !text.is_empty() {
                     font.draw_str(
                         batcher,
@@ -476,35 +483,48 @@ impl TitleScreenState {
     }
 }
 
-fn load_title_text_atlas(
-    assets: &AssetLocator,
-    gpu: &mut GpuContext,
-) -> (
-    Option<AnimateAtlas>,
-    Vec<(TextureHandle, [f32; 2])>,
-    ([f32; 2], [f32; 2]),
-) {
+struct LoadedTitleTextAtlas {
+    atlas: Option<AnimateAtlas>,
+    textures: Vec<(TextureHandle, [f32; 2])>,
+    bounds: ([f32; 2], [f32; 2]),
+}
+
+impl Default for LoadedTitleTextAtlas {
+    fn default() -> Self {
+        Self {
+            atlas: None,
+            textures: Vec::new(),
+            bounds: ([0.0, 0.0], [100.0, 100.0]),
+        }
+    }
+}
+
+fn load_title_text_atlas(assets: &AssetLocator, gpu: &mut GpuContext) -> LoadedTitleTextAtlas {
     let dir = assets.animate_atlas_dir("title-screen-text");
     let Ok(anim_json) = fs::read_to_string(dir.join("Animation.json")) else {
-        return (None, Vec::new(), ([0.0, 0.0], [100.0, 100.0]));
+        return LoadedTitleTextAtlas::default();
     };
     let sm_json_path = dir.join("spritemap1.json");
     let sm_png_path = dir.join("spritemap1.png");
     let (Ok(sm_json), Ok(png_bytes)) = (fs::read_to_string(&sm_json_path), fs::read(&sm_png_path))
     else {
-        return (None, Vec::new(), ([0.0, 0.0], [100.0, 100.0]));
+        return LoadedTitleTextAtlas::default();
     };
     let Ok(tex) = gpu.from_png_bytes(Some("title-screen-text"), &png_bytes) else {
-        return (None, Vec::new(), ([0.0, 0.0], [100.0, 100.0]));
+        return LoadedTitleTextAtlas::default();
     };
     let Some((tw, th)) = gpu.texture_size(tex) else {
-        return (None, Vec::new(), ([0.0, 0.0], [100.0, 100.0]));
+        return LoadedTitleTextAtlas::default();
     };
     let Ok(atlas) = AnimateAtlas::from_json_strs(&anim_json, &[sm_json.as_str()]) else {
-        return (None, Vec::new(), ([0.0, 0.0], [100.0, 100.0]));
+        return LoadedTitleTextAtlas::default();
     };
     let bounds = atlas.full_timeline_bounds();
-    (Some(atlas), vec![(tex, [tw as f32, th as f32])], bounds)
+    LoadedTitleTextAtlas {
+        atlas: Some(atlas),
+        textures: vec![(tex, [tw as f32, th as f32])],
+        bounds,
+    }
 }
 
 fn load_random_wacky(assets: &AssetLocator) -> WackyPair {
