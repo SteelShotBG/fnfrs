@@ -24,8 +24,13 @@ pub const SPRITE_FLAG_FLIP_Y: u32 = 1 << 2;
 pub const SPRITE_FLAG_PIXEL_SNAP: u32 = 1 << 3;
 
 /// Flag indicating the subtexture is rotated 90 degrees CW in the atlas and
-/// must be rotated 90 degrees CCW when sampled (Adobe Animate `spritemap` `rotated: true`).
+/// must be rotated 90 degrees CCW when sampled (Adobe Animate `spritemap` `rotated: true`,
+/// and Sparrow `rotated="true"`).
 pub const SPRITE_FLAG_ROTATED_90_CCW: u32 = 1 << 4;
+
+/// Flag indicating `size` stores the X-edge vector `(m.a*w, m.b*w)` and `origin` stores the
+/// Y-edge vector `(m.c*h, m.d*h)` for arbitrary 2D affine transforms (including skew).
+pub const SPRITE_FLAG_AFFINE: u32 = 1 << 5;
 
 /// Blend mode used when drawing sprite or mesh batches.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
@@ -160,6 +165,14 @@ impl SpriteInstance {
     #[must_use]
     pub const fn with_rotation(mut self, rotation: f32, origin: [f32; 2]) -> Self {
         self.rotation = rotation;
+        self.origin = origin;
+        self
+    }
+
+    /// Sets the local pivot/Y-edge vector `origin` directly (used with `SPRITE_FLAG_AFFINE`).
+    #[inline]
+    #[must_use]
+    pub const fn with_origin(mut self, origin: [f32; 2]) -> Self {
         self.origin = origin;
         self
     }
@@ -561,6 +574,8 @@ pub fn compute_sprite_corner_uv(uv_rect: [f32; 4], corner: [f32; 2], flags: u32)
 
     let (lu, lv) = if (flags & SPRITE_FLAG_ROTATED_90_CW) != 0 {
         (fy, 1.0 - fx)
+    } else if (flags & SPRITE_FLAG_ROTATED_90_CCW) != 0 {
+        (1.0 - fy, fx)
     } else {
         (fx, fy)
     };

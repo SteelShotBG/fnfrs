@@ -11,7 +11,7 @@ use fnfrs_core::schema::notestyle::NoteStyleData;
 use fnfrs_render::{
     AtlasFrame, BlendMode, FilterMode, GpuContext, SparrowAtlas, SpriteBatcher, SpriteInstance,
     TextureHandle, SPRITE_FLAG_FLIP_X, SPRITE_FLAG_FLIP_Y, SPRITE_FLAG_PIXEL_SNAP,
-    SPRITE_FLAG_ROTATED_90_CW,
+    SPRITE_FLAG_ROTATED_90_CCW,
 };
 
 use crate::input::NoteDirection;
@@ -66,7 +66,7 @@ pub fn push_sparrow_frame(
 
     let mut flags = 0u32;
     if frame.rotated {
-        flags |= SPRITE_FLAG_ROTATED_90_CW;
+        flags |= SPRITE_FLAG_ROTATED_90_CCW;
     }
     if frame.flip_x {
         flags |= SPRITE_FLAG_FLIP_X;

@@ -15,8 +15,8 @@ use fnfrs_core::schema::character::{
 use fnfrs_core::schema::stage::{StageDataCharacter, TextureAtlasData};
 use fnfrs_render::{
     AnimateAtlas, AtlasFrame, BlendMode, EvaluatedPart, FilterMode, GpuContext, PackerAtlas,
-    SparrowAtlas, SpriteBatcher, SpriteInstance, TextureHandle, SPRITE_FLAG_FLIP_X,
-    SPRITE_FLAG_FLIP_Y, SPRITE_FLAG_ROTATED_90_CCW, SPRITE_FLAG_ROTATED_90_CW,
+    SparrowAtlas, SpriteBatcher, SpriteInstance, TextureHandle, SPRITE_FLAG_AFFINE,
+    SPRITE_FLAG_FLIP_X, SPRITE_FLAG_FLIP_Y, SPRITE_FLAG_ROTATED_90_CCW,
 };
 
 use crate::input::NoteDirection;
@@ -189,6 +189,8 @@ pub(crate) enum AnimFrames {
         target_name: String,
         indices: Vec<u32>,
         total_frames: u32,
+        bounds_origin: [f32; 2],
+        bounds_size: [f32; 2],
     },
 }
 
@@ -213,12 +215,10 @@ impl AnimFrames {
     }
 
     #[must_use]
-    pub(crate) fn first_source_size(&self, atlases: &[LoadedAtlasSource]) -> Option<[f32; 2]> {
+    pub(crate) fn first_source_size(&self, _atlases: &[LoadedAtlasSource]) -> Option<[f32; 2]> {
         match self {
             Self::Sheet { frames, .. } => frames.first().map(AtlasFrame::source_size),
-            Self::Animate { atlas_idx, .. } => atlases
-                .get(*atlas_idx)
-                .and_then(LoadedAtlasSource::fallback_hitbox_size),
+            Self::Animate { bounds_size, .. } => Some(*bounds_size),
         }
     }
 }
@@ -497,13 +497,13 @@ impl AnimBank {
                     anim.flip_y,
                 );
             }
-            AnimFrames::Animate { atlas_idx, .. } => {
-                let Some(LoadedAtlasSource::Animate {
-                    textures,
-                    bounds_origin,
-                    bounds_size,
-                    ..
-                }) = self.atlases.get(*atlas_idx)
+            AnimFrames::Animate {
+                atlas_idx,
+                bounds_origin,
+                bounds_size,
+                ..
+            } => {
+                let Some(LoadedAtlasSource::Animate { textures, .. }) = self.atlases.get(*atlas_idx)
                 else {
                     return;
                 };
@@ -585,23 +585,10 @@ pub(crate) fn draw_atlas_frame(
         flip_y,
     );
 
-    // HaxeFlixel scales frames around `src * 0.5` while `offset` stays locked from `updateHitbox()`
-    // on `ref_unscaled_size` (`idle`). Compensate when `scale != 1.0` and frame dimensions vary.
-    let origin_scale_comp = if let Some(ref_sz) = params.ref_unscaled_size {
-        [
-            0.5 * (ref_sz[0] - src[0]) * (params.scale[0] - 1.0),
-            0.5 * (ref_sz[1] - src[1]) * (params.scale[1] - 1.0),
-        ]
-    } else {
-        [0.0, 0.0]
-    };
-
     let untrimmed_x = params.pos[0]
-        - (params.anim_offsets[0] - params.global_offsets[0]) * params.scale[0]
-        + origin_scale_comp[0];
+        - (params.anim_offsets[0] - params.global_offsets[0]) * params.scale[0];
     let untrimmed_y = params.pos[1]
-        - (params.anim_offsets[1] - params.global_offsets[1]) * params.scale[1]
-        + origin_scale_comp[1];
+        - (params.anim_offsets[1] - params.global_offsets[1]) * params.scale[1];
 
     let world_x = untrimmed_x + trim[0] * params.scale[0];
     let world_y = untrimmed_y + trim[1] * params.scale[1];
@@ -625,7 +612,7 @@ pub(crate) fn draw_atlas_frame(
     let eff_flip_y = flip_y ^ frame.flip_y;
     let mut flags = 0u32;
     if frame.rotated {
-        flags |= SPRITE_FLAG_ROTATED_90_CW;
+        flags |= SPRITE_FLAG_ROTATED_90_CCW;
     }
     if eff_flip_x {
         flags |= SPRITE_FLAG_FLIP_X;
@@ -740,29 +727,15 @@ pub(crate) fn draw_animate_parts(
             (part.size[0], part.size[1])
         };
 
-        let sx = (m.a * m.a + m.b * m.b).sqrt();
-        let sy = (m.c * m.c + m.d * m.d).sqrt();
-        if sx <= 1e-6 || sy <= 1e-6 {
+        let sx_sq = m.a * m.a + m.b * m.b;
+        let sy_sq = m.c * m.c + m.d * m.d;
+        if sx_sq <= 1e-10 || sy_sq <= 1e-10 {
             continue;
         }
 
-        let det = m.a * m.d - m.b * m.c;
-        let (pos, rot, part_flip_x) = if det < 0.0 {
-            (
-                [m.tx + m.a * upright_w, m.ty + m.b * upright_w],
-                (-m.b).atan2(-m.a),
-                true,
-            )
-        } else {
-            ([m.tx, m.ty], m.b.atan2(m.a), false)
-        };
-
-        let mut flags = 0u32;
+        let mut flags = SPRITE_FLAG_AFFINE;
         if part.rotated {
             flags |= SPRITE_FLAG_ROTATED_90_CCW;
-        }
-        if part_flip_x {
-            flags |= SPRITE_FLAG_FLIP_X;
         }
 
         let uv_bounds = [
@@ -778,10 +751,11 @@ pub(crate) fn draw_animate_parts(
             part.color[3] * params.color[3] * params.alpha,
         ];
 
-        let inst = SpriteInstance::new(pos, [upright_w * sx, upright_h * sy])
+        // Exact 2x2 affine quad (`pos` = m(0,0), `size` = m(w,0) - m(0,0), `origin` = m(0,h) - m(0,0)).
+        let inst = SpriteInstance::new([m.tx, m.ty], [m.a * upright_w, m.b * upright_w])
+            .with_origin([m.c * upright_h, m.d * upright_h])
             .with_uv_rect(uv_bounds)
             .with_color(tint)
-            .with_rotation(rot, [0.0, 0.0])
             .with_flags(flags);
 
         batcher.push(tex, params.blend, filter, inst);
@@ -895,52 +869,7 @@ pub(crate) fn load_animate_source(
 }
 
 fn compute_animate_bounds(atlas: &AnimateAtlas) -> ([f32; 2], [f32; 2]) {
-    let mut parts = Vec::with_capacity(INITIAL_EVAL_PARTS_CAP);
-    if !atlas.evaluate_label("idle", 0, &mut parts)
-        && !atlas.evaluate_label("Idle", 0, &mut parts)
-    {
-        atlas.evaluate_frame(0, &mut parts);
-    }
-    if parts.is_empty() {
-        return ([0.0, 0.0], [1.0, 1.0]);
-    }
-
-    let mut min_x = f32::INFINITY;
-    let mut min_y = f32::INFINITY;
-    let mut max_x = f32::NEG_INFINITY;
-    let mut max_y = f32::NEG_INFINITY;
-
-    for part in &parts {
-        let (w, h) = if part.rotated {
-            (part.size[1], part.size[0])
-        } else {
-            (part.size[0], part.size[1])
-        };
-        let m = Affine2D {
-            a: part.transform.matrix2.x_axis.x,
-            b: part.transform.matrix2.x_axis.y,
-            c: part.transform.matrix2.y_axis.x,
-            d: part.transform.matrix2.y_axis.y,
-            tx: part.transform.translation.x,
-            ty: part.transform.translation.y,
-        };
-        for &(lx, ly) in &[(0.0, 0.0), (w, 0.0), (0.0, h), (w, h)] {
-            let [px, py] = m.transform_point(lx, ly);
-            min_x = min_x.min(px);
-            min_y = min_y.min(py);
-            max_x = max_x.max(px);
-            max_y = max_y.max(py);
-        }
-    }
-
-    if !min_x.is_finite() || !min_y.is_finite() {
-        return ([0.0, 0.0], [1.0, 1.0]);
-    }
-
-    (
-        [min_x, min_y],
-        [(max_x - min_x).max(1.0), (max_y - min_y).max(1.0)],
-    )
+    atlas.full_timeline_bounds()
 }
 
 pub(crate) fn build_loaded_anim(
@@ -985,18 +914,30 @@ pub(crate) fn build_loaded_anim(
                 frames: collected,
             }
         }
-        LoadedAtlasSource::Animate { atlas, .. } => {
+        LoadedAtlasSource::Animate {
+            atlas,
+            bounds_origin: atlas_bounds_origin,
+            bounds_size: atlas_bounds_size,
+            ..
+        } => {
             let prefix = anim.prefix.as_deref()?;
             let mode = if anim.anim_type.eq_ignore_ascii_case("symbol") {
                 AnimateAnimMode::Symbol
             } else {
                 AnimateAnimMode::FrameLabel
             };
-            let total_frames = match mode {
-                AnimateAnimMode::FrameLabel => {
-                    atlas.label_span(prefix).map_or(0, |s| s.duration)
+            let (total_frames, (bounds_origin, bounds_size)) = match mode {
+                AnimateAnimMode::FrameLabel => (
+                    atlas.label_span(prefix).map_or(0, |s| s.duration),
+                    (*atlas_bounds_origin, *atlas_bounds_size),
+                ),
+                AnimateAnimMode::Symbol => {
+                    let total = atlas.symbol_total_frames(prefix).unwrap_or(0);
+                    let sym_b = atlas
+                        .symbol_bounds(prefix)
+                        .unwrap_or((*atlas_bounds_origin, *atlas_bounds_size));
+                    (total, sym_b)
                 }
-                AnimateAnimMode::Symbol => atlas.symbol_total_frames(prefix).unwrap_or(0),
             };
             let indices: Vec<u32> = anim.frame_indices.iter().map(|&i| i as u32).collect();
             AnimFrames::Animate {
@@ -1005,6 +946,8 @@ pub(crate) fn build_loaded_anim(
                 target_name: prefix.to_owned(),
                 indices,
                 total_frames,
+                bounds_origin,
+                bounds_size,
             }
         }
     };
@@ -1605,6 +1548,79 @@ impl BaseCharacter {
         self.camera_focus_point
     }
 
+    /// Returns `(current_anim_index, current_frame_index, current_anim_offsets)` for trail effects.
+    #[inline]
+    #[must_use]
+    pub fn active_frame_snapshot(&self) -> Option<(usize, usize, [f32; 2])> {
+        let idx = self.bank.current_anim?;
+        let anim = self.bank.anims.get(idx)?;
+        Some((idx, self.bank.current_frame, anim.offsets))
+    }
+
+    /// Draws an explicit `(anim_idx, frame_idx)` snapshot at `pos` with `alpha` (e.g. `FunkTrail`).
+    #[allow(clippy::too_many_arguments)]
+    pub fn draw_snapshot_ghost(
+        &self,
+        batcher: &mut SpriteBatcher,
+        cam_pos: [f32; 2],
+        cam_zoom: f32,
+        anim_idx: usize,
+        frame_idx: usize,
+        pos: [f32; 2],
+        anim_offsets: [f32; 2],
+        flip_x: bool,
+        alpha: f32,
+    ) {
+        let Some(anim) = self.bank.anims.get(anim_idx) else {
+            return;
+        };
+        let AnimFrames::Sheet { atlas_idx, frames } = &anim.frames else {
+            return;
+        };
+        if frames.is_empty() {
+            return;
+        }
+        let frame = &frames[frame_idx.min(frames.len() - 1)];
+        let Some(atlas) = self.bank.atlases.get(*atlas_idx) else {
+            return;
+        };
+        let (texture, tex_size) = match atlas {
+            LoadedAtlasSource::Sparrow {
+                texture, tex_size, ..
+            }
+            | LoadedAtlasSource::Packer {
+                texture, tex_size, ..
+            } => (*texture, *tex_size),
+            LoadedAtlasSource::Animate { .. } => return,
+        };
+        let params = AtlasDrawParams {
+            pos,
+            scale: [self.scale, self.scale],
+            anim_offsets,
+            global_offsets: self.global_offsets,
+            scroll_factor: self.scroll_factor,
+            cam_pos,
+            cam_zoom,
+            angle_deg: self.angle,
+            flip_x,
+            flip_y: false,
+            color: [1.0, 1.0, 1.0, 1.0],
+            alpha,
+            blend: BlendMode::Normal,
+            is_pixel: self.is_pixel,
+            ref_unscaled_size: Some(self.ref_unscaled_size),
+        };
+        draw_atlas_frame(
+            batcher,
+            texture,
+            tex_size,
+            frame,
+            &params,
+            anim.flip_x,
+            anim.flip_y,
+        );
+    }
+
     /// Returns the active animation name, or `""` if none.
     #[inline]
     #[must_use]
@@ -1666,7 +1682,11 @@ impl BaseCharacter {
     pub fn play_animation(&mut self, name: &str, restart: bool, ignore_other: bool) {
         if !self.can_play_other_anims {
             let same_restart = self.current_animation() == name && restart;
-            if !same_restart && !name.starts_with("sing") {
+            if !same_restart
+                && !name.starts_with("sing")
+                && !name.starts_with("shoot")
+                && !name.starts_with("cheer")
+            {
                 return;
             }
         }
@@ -1816,7 +1836,7 @@ impl BaseCharacter {
 
     /// Beat callback matching `BaseCharacter` / `Bopper` dance cadence.
     pub fn on_beat_hit(&mut self, beat: i32, is_holding_note: bool) {
-        if self.dance_every <= 0.0 || beat < 0 {
+        if self.dance_every <= 0.0 {
             return;
         }
         let step = beat * (STEPS_PER_BEAT as i32);
@@ -1827,7 +1847,7 @@ impl BaseCharacter {
         let should_dance = if self.dance_every < 1.0 {
             true
         } else {
-            (step as u32).is_multiple_of(steps_per_dance as u32)
+            step.rem_euclid(steps_per_dance) == 0
         };
         if should_dance && self.last_dance_step != Some(step) {
             self.last_dance_step = Some(step);
@@ -1840,14 +1860,14 @@ impl BaseCharacter {
 
     /// Step callback supporting fractional `dance_every` down to `0.25` (`Bopper.onStepHit`).
     pub fn on_step_hit(&mut self, step: i32, is_holding_note: bool) {
-        if self.dance_every <= 0.0 || step < 0 {
+        if self.dance_every <= 0.0 {
             return;
         }
         let steps_per_dance = (self.dance_every * STEPS_PER_BEAT as f32).round() as i32;
         if steps_per_dance <= 0 {
             return;
         }
-        if (step as u32).is_multiple_of(steps_per_dance as u32) && self.last_dance_step != Some(step) {
+        if step.rem_euclid(steps_per_dance) == 0 && self.last_dance_step != Some(step) {
             self.last_dance_step = Some(step);
             if self.kind == CharacterKind::Bf && is_holding_note && self.is_singing() {
                 return;

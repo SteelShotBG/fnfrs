@@ -474,8 +474,9 @@ impl GpuContext {
         match self.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(frame) => Ok(Some(frame)),
             wgpu::CurrentSurfaceTexture::Suboptimal(frame) => {
+                drop(frame);
                 self.surface.configure(&self.device, &self.config);
-                Ok(Some(frame))
+                Ok(None)
             }
             wgpu::CurrentSurfaceTexture::Outdated => {
                 self.surface.configure(&self.device, &self.config);

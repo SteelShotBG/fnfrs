@@ -686,6 +686,12 @@ impl Camera2D {
         }
     }
 
+    /// Sets the camera zoom bop multiplier directly without relative-zoom gating
+    /// (used by [`CameraRig`] where `PlayState.hx` gates solely on `camHUD.zoom`).
+    pub fn bop_unclamped(&mut self, intensity: f32) {
+        self.bop_multiplier = intensity;
+    }
+
     /// Applies a HUD camera zoom bop offset (e.g. `0.03`), clamped under `1.35 * default_zoom`.
     pub fn bop_hud(&mut self, hud_intensity: f32) {
         if self.effective_zoom() < MAX_RELATIVE_CAM_ZOOM * self.default_zoom {
@@ -930,8 +936,11 @@ impl CameraRig {
             return;
         }
         let step_pos = (current_step as f32) + self.zoom_offset_beats * steps_per_beat;
-        if (step_pos % period).abs() < 1e-4 {
-            self.cam_game.bop(self.bop_intensity);
+        let rem = step_pos.rem_euclid(period);
+        if (rem < 1e-4 || (period - rem).abs() < 1e-4)
+            && self.cam_hud.effective_zoom() < MAX_RELATIVE_CAM_ZOOM * self.cam_hud.default_zoom
+        {
+            self.cam_game.bop_unclamped(self.bop_intensity);
             self.cam_hud.bop_hud(self.hud_bop_intensity);
         }
     }

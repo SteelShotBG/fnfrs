@@ -21,7 +21,7 @@ use fnfrs_core::scoring::{
 use fnfrs_render::{
     AtlasFrame, BitmapFont, BlendMode, FilterMode, GpuContext, SparrowAtlas, SpriteBatcher,
     SpriteInstance, StackTextBuffer, TextAlign, TextStyle, TextureHandle, SPRITE_FLAG_FLIP_X,
-    SPRITE_FLAG_FLIP_Y, SPRITE_FLAG_PIXEL_SNAP, SPRITE_FLAG_ROTATED_90_CW,
+    SPRITE_FLAG_FLIP_Y, SPRITE_FLAG_PIXEL_SNAP, SPRITE_FLAG_ROTATED_90_CCW,
 };
 use winit::keyboard::KeyCode;
 
@@ -688,7 +688,7 @@ impl HealthIcon {
                 };
                 let mut flags = base_flags;
                 if frame.rotated {
-                    flags |= SPRITE_FLAG_ROTATED_90_CW;
+                    flags |= SPRITE_FLAG_ROTATED_90_CCW;
                 }
                 if frame.flip_x {
                     flags ^= SPRITE_FLAG_FLIP_X;

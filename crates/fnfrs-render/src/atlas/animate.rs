@@ -135,13 +135,15 @@ impl AnimateAtlas {
         animation_json: &str,
         spritemaps_json: &[&str],
     ) -> Result<Self, AtlasError> {
-        let raw_anim: RawAnimationDoc = serde_json::from_str(animation_json)?;
+        let animation_json = animation_json.trim_start_matches('\u{feff}');
+        let raw_anim = parse_raw_animation_doc(animation_json)?;
 
         let mut spritemaps = Vec::with_capacity(spritemaps_json.len());
         let mut sprites = Vec::new();
         let mut sprite_index = FxHashMap::default();
 
         for (sm_idx, sm_json) in spritemaps_json.iter().enumerate() {
+            let sm_json = sm_json.trim_start_matches('\u{feff}');
             let raw_sm: RawSpritemapDoc = serde_json::from_str(sm_json)?;
             let tex_w = raw_sm.meta.size.w;
             let tex_h = raw_sm.meta.size.h;
@@ -270,6 +272,57 @@ impl AnimateAtlas {
         self.symbol_index
             .get(symbol_name)
             .map(|&idx| self.symbols[idx].total_frames)
+    }
+
+    /// Computes union `[origin, size]` bounding box over all frames of the main timeline (`AN.TL`).
+    #[must_use]
+    pub fn full_timeline_bounds(&self) -> ([f32; 2], [f32; 2]) {
+        self.compute_timeline_bounds(&self.main_timeline)
+            .unwrap_or(([0.0, 0.0], [1.0, 1.0]))
+    }
+
+    /// Computes union `[origin, size]` bounding box over all frames of a symbol inside `SD.S`.
+    #[must_use]
+    pub fn symbol_bounds(&self, symbol_name: &str) -> Option<([f32; 2], [f32; 2])> {
+        let &sym_idx = self.symbol_index.get(symbol_name)?;
+        self.compute_timeline_bounds(&self.symbols[sym_idx])
+    }
+
+    fn compute_timeline_bounds(&self, timeline: &CompiledTimeline) -> Option<([f32; 2], [f32; 2])> {
+        let total = timeline.total_frames.max(1);
+        let mut parts = Vec::with_capacity(64);
+        let mut min_x = f32::INFINITY;
+        let mut min_y = f32::INFINITY;
+        let mut max_x = f32::NEG_INFINITY;
+        let mut max_y = f32::NEG_INFINITY;
+
+        for frame_idx in 0..total {
+            parts.clear();
+            self.eval_timeline(timeline, frame_idx, EvalCtx::ROOT, &mut parts);
+            for part in &parts {
+                let (w, h) = if part.rotated {
+                    (part.size[1], part.size[0])
+                } else {
+                    (part.size[0], part.size[1])
+                };
+                let m = part.transform;
+                for &(lx, ly) in &[(0.0, 0.0), (w, 0.0), (0.0, h), (w, h)] {
+                    let pt = m.transform_point2(Vec2::new(lx, ly));
+                    min_x = min_x.min(pt.x);
+                    min_y = min_y.min(pt.y);
+                    max_x = max_x.max(pt.x);
+                    max_y = max_y.max(pt.y);
+                }
+            }
+        }
+
+        if !min_x.is_finite() || !min_y.is_finite() {
+            return None;
+        }
+        Some((
+            [min_x, min_y],
+            [(max_x - min_x).max(1.0), (max_y - min_y).max(1.0)],
+        ))
     }
 
     /// Evaluates the root timeline at `frame_idx`, clearing `out_parts` first and appending
@@ -582,6 +635,253 @@ fn parse_hex_rgb(s: &str) -> Option<[f32; 3]> {
     let g = ((val >> 8) & 0xFF) as f32 / 255.0;
     let b = (val & 0xFF) as f32 / 255.0;
     Some([r, g, b])
+}
+
+fn parse_raw_animation_doc(json_str: &str) -> Result<RawAnimationDoc, AtlasError> {
+    let val: serde_json::Value = serde_json::from_str(json_str)?;
+    if val.get("AN").is_some() {
+        return Ok(serde_json::from_value(val)?);
+    }
+    let legacy: LegacyAnimationDoc = serde_json::from_value(val)?;
+    Ok(legacy.into_raw())
+}
+
+#[derive(Deserialize)]
+struct LegacyAnimationDoc {
+    #[serde(rename = "ANIMATION")]
+    animation: LegacyAnimationNode,
+    #[serde(rename = "SYMBOL_DICTIONARY", default)]
+    symbol_dictionary: Option<LegacySymbolDict>,
+    #[serde(rename = "metadata", default)]
+    metadata: Option<LegacyMetadata>,
+}
+
+#[derive(Deserialize)]
+struct LegacyMetadata {
+    #[serde(default)]
+    framerate: Option<f32>,
+}
+
+#[derive(Deserialize)]
+struct LegacyAnimationNode {
+    #[serde(rename = "TIMELINE")]
+    timeline: LegacyTimeline,
+}
+
+#[derive(Deserialize)]
+struct LegacySymbolDict {
+    #[serde(rename = "Symbols", default)]
+    symbols: Vec<LegacySymbolDef>,
+}
+
+#[derive(Deserialize)]
+struct LegacySymbolDef {
+    #[serde(rename = "SYMBOL_name")]
+    name: String,
+    #[serde(rename = "TIMELINE")]
+    timeline: LegacyTimeline,
+}
+
+#[derive(Deserialize)]
+struct LegacyTimeline {
+    #[serde(rename = "LAYERS", default)]
+    layers: Vec<LegacyLayer>,
+}
+
+#[derive(Deserialize)]
+struct LegacyLayer {
+    #[serde(rename = "Frames", default)]
+    frames: Vec<LegacyKeyframe>,
+}
+
+#[derive(Deserialize)]
+struct LegacyKeyframe {
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    index: u32,
+    #[serde(default = "default_duration")]
+    duration: u32,
+    #[serde(default)]
+    elements: Vec<LegacyElement>,
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum LegacyElement {
+    Symbol {
+        #[serde(rename = "SYMBOL_Instance")]
+        si: LegacySymbolInstance,
+    },
+    Sprite {
+        #[serde(rename = "ATLAS_SPRITE_instance")]
+        asi: LegacyAtlasSpriteInstance,
+    },
+}
+
+#[derive(Deserialize)]
+struct LegacySymbolInstance {
+    #[serde(rename = "SYMBOL_name")]
+    sn: String,
+    #[serde(rename = "firstFrame", default)]
+    ff: i32,
+    #[serde(rename = "loop", default)]
+    lp: Option<String>,
+    #[serde(rename = "Matrix3D", default)]
+    m3d: Option<LegacyMatrix3D>,
+    #[serde(rename = "color", default)]
+    color: Option<LegacyColorEffect>,
+}
+
+#[derive(Deserialize)]
+struct LegacyAtlasSpriteInstance {
+    name: String,
+    #[serde(rename = "Matrix3D", default)]
+    m3d: Option<LegacyMatrix3D>,
+    #[serde(rename = "Position", default)]
+    pos: Option<RawPoint>,
+    #[serde(rename = "color", default)]
+    color: Option<LegacyColorEffect>,
+}
+
+#[derive(Clone, Copy, Deserialize)]
+struct LegacyMatrix3D {
+    #[serde(default = "one_f32")]
+    m00: f32,
+    #[serde(default)]
+    m01: f32,
+    #[serde(default)]
+    m10: f32,
+    #[serde(default = "one_f32")]
+    m11: f32,
+    #[serde(default)]
+    m30: f32,
+    #[serde(default)]
+    m31: f32,
+}
+
+fn one_f32() -> f32 {
+    1.0
+}
+
+impl LegacyMatrix3D {
+    fn into_mx(self) -> [f32; 6] {
+        [self.m00, self.m01, self.m10, self.m11, self.m30, self.m31]
+    }
+}
+
+#[derive(Deserialize)]
+struct LegacyColorEffect {
+    #[serde(default)]
+    mode: Option<String>,
+    #[serde(rename = "alphaMultiplier", default)]
+    am: Option<f32>,
+    #[serde(rename = "redMultiplier", default)]
+    rm: Option<f32>,
+    #[serde(rename = "greenMultiplier", default)]
+    gm: Option<f32>,
+    #[serde(rename = "blueMultiplier", default)]
+    bm: Option<f32>,
+    #[serde(rename = "tintColor", default)]
+    tc: Option<String>,
+    #[serde(rename = "tintMultiplier", default)]
+    tm: Option<f32>,
+}
+
+impl LegacyColorEffect {
+    fn into_raw(self) -> RawColorEffect {
+        RawColorEffect {
+            mode: self.mode,
+            am: self.am,
+            rm: self.rm,
+            gm: self.gm,
+            bm: self.bm,
+            tc: self.tc,
+            tm: self.tm,
+        }
+    }
+}
+
+impl LegacyTimeline {
+    fn into_raw(self) -> RawTimeline {
+        RawTimeline {
+            layers: self
+                .layers
+                .into_iter()
+                .map(|l| RawLayer {
+                    frames: l
+                        .frames
+                        .into_iter()
+                        .map(|f| RawKeyframe {
+                            name: f.name,
+                            index: f.index,
+                            duration: f.duration,
+                            elements: f
+                                .elements
+                                .into_iter()
+                                .map(|el| match el {
+                                    LegacyElement::Symbol { si } => {
+                                        let lp = si.lp.as_deref().map(|s| {
+                                            if s.eq_ignore_ascii_case("playonce") {
+                                                "PO".to_owned()
+                                            } else if s.eq_ignore_ascii_case("singleframe") {
+                                                "SF".to_owned()
+                                            } else {
+                                                "LP".to_owned()
+                                            }
+                                        });
+                                        RawElement::Symbol {
+                                            si: RawSymbolInstance {
+                                                sn: si.sn,
+                                                ff: si.ff,
+                                                lp,
+                                                mx: si.m3d.map(LegacyMatrix3D::into_mx),
+                                                m3d: None,
+                                                pos: None,
+                                                color: si.color.map(LegacyColorEffect::into_raw),
+                                            },
+                                        }
+                                    }
+                                    LegacyElement::Sprite { asi } => RawElement::Sprite {
+                                        asi: RawAtlasSpriteInstance {
+                                            name: asi.name,
+                                            mx: asi.m3d.map(LegacyMatrix3D::into_mx),
+                                            m3d: None,
+                                            pos: asi.pos,
+                                            color: asi.color.map(LegacyColorEffect::into_raw),
+                                        },
+                                    },
+                                })
+                                .collect(),
+                        })
+                        .collect(),
+                })
+                .collect(),
+        }
+    }
+}
+
+impl LegacyAnimationDoc {
+    fn into_raw(self) -> RawAnimationDoc {
+        RawAnimationDoc {
+            an: RawAnimationNode {
+                timeline: self.animation.timeline.into_raw(),
+            },
+            sd: self.symbol_dictionary.map(|sd| RawSymbolDict {
+                symbols: sd
+                    .symbols
+                    .into_iter()
+                    .map(|s| RawSymbolDef {
+                        name: s.name,
+                        timeline: s.timeline.into_raw(),
+                    })
+                    .collect(),
+            }),
+            md: self
+                .metadata
+                .map(|md| RawMetadata { frt: md.framerate }),
+        }
+    }
 }
 
 #[derive(Deserialize)]

@@ -195,14 +195,14 @@ impl Bopper {
 
     /// Step callback supporting `dance_every` down to `0.25` beats (`Bopper.onStepHit`).
     pub fn on_step_hit(&mut self, step: i32) {
-        if self.dance_every <= 0.0 || step < 0 {
+        if self.dance_every <= 0.0 {
             return;
         }
         let steps_per_dance = (self.dance_every * STEPS_PER_BEAT as f32).round() as i32;
         if steps_per_dance <= 0 {
             return;
         }
-        if (step as u32).is_multiple_of(steps_per_dance as u32) && self.last_dance_step != Some(step) {
+        if step.rem_euclid(steps_per_dance) == 0 && self.last_dance_step != Some(step) {
             self.last_dance_step = Some(step);
             self.dance(self.should_bop);
         }
@@ -210,7 +210,7 @@ impl Bopper {
 
     /// Beat callback for integer or sub-beat `dance_every` cadences.
     pub fn on_beat_hit(&mut self, beat: i32) {
-        if self.dance_every <= 0.0 || beat < 0 {
+        if self.dance_every <= 0.0 {
             return;
         }
         let step = beat * (STEPS_PER_BEAT as i32);
@@ -221,7 +221,7 @@ impl Bopper {
         let should_dance = if self.dance_every < 1.0 {
             true
         } else {
-            (step as u32).is_multiple_of(steps_per_dance as u32)
+            step.rem_euclid(steps_per_dance) == 0
         };
         if should_dance && self.last_dance_step != Some(step) {
             self.last_dance_step = Some(step);
@@ -863,6 +863,69 @@ impl Stage {
                 c_idx += 1;
             }
         }
+    }
+
+    /// Draws stage props, characters, and native script overlays interleaved in ascending
+    /// `z_index` order with zero heap allocations.
+    #[allow(clippy::too_many_arguments)]
+    pub fn draw_with_characters_and_scripts(
+        &self,
+        batcher: &mut SpriteBatcher,
+        cam_pos: [f32; 2],
+        cam_zoom: f32,
+        hud_zoom: f32,
+        chars: &[&BaseCharacter],
+        scripts: &crate::scripts::NativeScriptHost,
+        dad: Option<&BaseCharacter>,
+        gf: Option<&BaseCharacter>,
+    ) {
+        const MAX_INLINE_CHARS: usize = 16;
+        let char_count = chars.len().min(MAX_INLINE_CHARS);
+        let mut order = [(i32::MAX, usize::MAX); MAX_INLINE_CHARS];
+        for (i, ch) in chars.iter().take(char_count).enumerate() {
+            order[i] = (ch.z_index, i);
+        }
+        for i in 1..char_count {
+            let key = order[i];
+            let mut j = i;
+            while j > 0 && order[j - 1].0 > key.0 {
+                order[j] = order[j - 1];
+                j -= 1;
+            }
+            order[j] = key;
+        }
+
+        let mut p_idx = 0usize;
+        let mut c_idx = 0usize;
+        let mut prev_z = i32::MIN;
+        while p_idx < self.props.len() || c_idx < char_count {
+            let char_z = (c_idx < char_count).then(|| order[c_idx]);
+            let (next_z, draw_prop) = match (self.props.get(p_idx), char_z) {
+                (Some(p), Some((cz, _))) => {
+                    if p.z_index <= cz {
+                        (p.z_index, true)
+                    } else {
+                        (cz, false)
+                    }
+                }
+                (Some(p), None) => (p.z_index, true),
+                (None, Some((cz, _))) => (cz, false),
+                (None, None) => break,
+            };
+            if next_z > prev_z {
+                scripts.draw_range(batcher, prev_z, next_z, cam_pos, cam_zoom, dad, gf);
+                prev_z = next_z;
+            }
+            if draw_prop {
+                self.props[p_idx].draw(batcher, cam_pos, cam_zoom, hud_zoom);
+                p_idx += 1;
+            } else {
+                let ch = chars[order[c_idx].1];
+                ch.draw(batcher, cam_pos, cam_zoom);
+                c_idx += 1;
+            }
+        }
+        scripts.draw_range(batcher, prev_z, i32::MAX, cam_pos, cam_zoom, dad, gf);
     }
 }
 

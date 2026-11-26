@@ -15,6 +15,7 @@ use winit::keyboard::KeyCode;
 
 use crate::input::{HeldKeys, NoteDirection};
 use crate::note_style::{push_sparrow_frame, NoteStyleAssets, SparrowDrawParams};
+use crate::scripts::NoteKindTag;
 use crate::sustain::{advance_hold_covers, HoldCoverPhase, NoteHoldCoverState, SustainTrailState};
 
 /// Default pre-allocated pool size per strumline for visible note heads.
@@ -141,6 +142,7 @@ pub struct NoteEntity {
     pub strum_time_ms: f64,
     pub sustain_length_ms: f64,
     pub direction: NoteDirection,
+    pub kind: NoteKindTag,
     pub scoreable: bool,
     pub low_priority: bool,
     pub has_been_hit: bool,
@@ -163,6 +165,7 @@ impl Default for NoteEntity {
             strum_time_ms: 0.0,
             sustain_length_ms: 0.0,
             direction: NoteDirection::Left,
+            kind: NoteKindTag::Normal,
             scoreable: true,
             low_priority: false,
             has_been_hit: false,
@@ -670,6 +673,7 @@ impl Strumline {
                     strum_time_ms: strum_time,
                     sustain_length_ms: length,
                     direction: dir,
+                    kind: NoteKindTag::parse(note_info.kind.as_deref()),
                     scoreable: true,
                     low_priority: false,
                     has_been_hit: false,

@@ -37,6 +37,7 @@ use crate::hud::{
 use crate::input::{compute_note_diff_ms, InputQueue, NoteDirection};
 use crate::note_style::NoteStyleAssets;
 use crate::popup::PopUpPool;
+use crate::scripts::{NativeScriptHost, NoteKindTag};
 use crate::stage::Stage;
 use crate::strumline::{Strumline, StrumlineVisualStyle};
 use crate::sustain::compute_hold_drop_penalty;
@@ -90,7 +91,9 @@ pub struct PlayStepEvents {
     pub missed_dir: Option<NoteDirection>,
     pub died: bool,
     pub player_hit_dir: Option<NoteDirection>,
+    pub player_hit_kind: NoteKindTag,
     pub opponent_hit_dir: Option<NoteDirection>,
+    pub opponent_hit_kind: NoteKindTag,
 }
 
 /// Headless-friendly, zero-allocation gameplay simulation matching `PlayState.hx`.
@@ -346,6 +349,7 @@ impl PlaySession {
         {
             if let Some(note) = self.opponent_strumline.notes.get(*hit_h) {
                 step_events.opponent_hit_dir = Some(note.direction);
+                step_events.opponent_hit_kind = note.kind;
                 let hold_h = note.hold_handle;
                 self.opponent_strumline.hit_note(*hit_h, true, song_pos);
                 if let Some(hh) = hold_h {
@@ -372,6 +376,7 @@ impl PlaySession {
         {
             if let Some(note) = self.player_strumline.notes.get(*hit_h) {
                 step_events.player_hit_dir = Some(note.direction);
+                step_events.player_hit_kind = note.kind;
                 let hold_h = note.hold_handle;
                 self.player_strumline.hit_note(*hit_h, true, song_pos);
                 if let Some(hh) = hold_h {
@@ -557,11 +562,11 @@ impl PlaySession {
         style: &StrumlineVisualStyle,
         step_events: &mut PlayStepEvents,
     ) {
-        let Some((note_time_ms, direction, scoreable, hold_handle)) = self
+        let Some((note_time_ms, direction, kind, scoreable, hold_handle)) = self
             .player_strumline
             .notes
             .get(note_handle)
-            .map(|n| (n.strum_time_ms, n.direction, n.scoreable, n.hold_handle))
+            .map(|n| (n.strum_time_ms, n.direction, n.kind, n.scoreable, n.hold_handle))
         else {
             return;
         };
@@ -618,6 +623,7 @@ impl PlaySession {
         step_events.last_judgement = Some(judgement);
         step_events.last_note_diff_ms = Some(truncated_diff);
         step_events.player_hit_dir = Some(direction);
+        step_events.player_hit_kind = kind;
     }
 
     fn on_note_miss(&mut self, audio: Option<&mut AudioEngine>) {
@@ -959,6 +965,7 @@ pub struct PlayScene {
     pub game_over: GameOverState,
     pub results: ResultsSummaryState,
     pub scene_config: PlaySceneConfig,
+    pub scripts: NativeScriptHost,
 
     base_scroll_speed: f64,
     health_bar_size: [f32; 2],
@@ -1027,11 +1034,18 @@ impl PlayScene {
             game_over,
             results: ResultsSummaryState::new(),
             scene_config,
+            scripts: NativeScriptHost::empty(),
             base_scroll_speed,
             health_bar_size: [601.0, 19.0],
             player_scroll_tween: ScrollSpeedTween::default(),
             opponent_scroll_tween: ScrollSpeedTween::default(),
         }
+    }
+
+    /// Attaches a populated [`NativeScriptHost`] and runs initial stage setup hooks.
+    pub fn attach_scripts(&mut self, mut scripts: NativeScriptHost) {
+        scripts.on_stage_ready(self.stage.as_mut());
+        self.scripts = scripts;
     }
 
     /// Updates cached health bar dimensions used to anchor [`HealthIcon`]s.
@@ -1073,6 +1087,7 @@ impl PlayScene {
                 c.reset_character(true);
             }
         }
+        self.scripts.reset(self.stage.as_mut());
         if let Some(player) = &mut self.bf {
             player.is_dead = false;
         }
@@ -1151,26 +1166,14 @@ impl PlayScene {
             }
 
             if let Some(step) = tick.entered_step {
-                let beat_idx = match step {
-                    CountdownStep::Three => Some(0),
-                    CountdownStep::Two => Some(1),
-                    CountdownStep::One => Some(2),
-                    CountdownStep::Go => Some(3),
-                    CountdownStep::Before | CountdownStep::Done => None,
-                };
-                if let Some(beat) = beat_idx {
-                    if let Some(st) = &mut self.stage {
-                        st.on_beat_hit(beat);
-                    }
-                    if let Some(c) = &mut self.bf {
-                        c.dance(true);
-                    }
-                    if let Some(c) = &mut self.dad {
-                        c.dance(true);
-                    }
-                    if let Some(c) = &mut self.gf {
-                        c.dance(true);
-                    }
+                let is_countdown_beat = matches!(
+                    step,
+                    CountdownStep::Three
+                        | CountdownStep::Two
+                        | CountdownStep::One
+                        | CountdownStep::Go
+                );
+                if is_countdown_beat {
                     self.icon_p1.bop();
                     self.icon_p2.bop();
                 }
@@ -1221,8 +1224,15 @@ impl PlayScene {
             let opponent_strumline = &mut self.session.opponent_strumline;
             let player_tween = &mut self.player_scroll_tween;
             let opponent_tween = &mut self.opponent_scroll_tween;
+            let scripts = &mut self.scripts;
 
             self.event_queue.update(song_pos, |ev| {
+                if let GameEventAction::FocusCamera { target, .. } = &ev.action {
+                    scripts.on_focus_character(
+                        *target == CameraFocusTarget::Player,
+                        *target == CameraFocusTarget::Opponent,
+                    );
+                }
                 apply_song_event(
                     ev,
                     step_len_ms,
@@ -1248,9 +1258,8 @@ impl PlayScene {
         }
 
         if let Some(dir) = gameplay.player_hit_dir {
-            if let Some(bf) = &mut self.bf {
-                bf.play_sing_animation(dir, false, "");
-            }
+            self.scripts
+                .on_note_hit(true, dir, gameplay.player_hit_kind, self.bf.as_mut());
         } else if gameplay.missed_note || gameplay.ghost_missed {
             if let Some(dir) = gameplay.missed_dir {
                 if let Some(bf) = &mut self.bf {
@@ -1260,9 +1269,8 @@ impl PlayScene {
         }
 
         if let Some(dir) = gameplay.opponent_hit_dir {
-            if let Some(dad) = &mut self.dad {
-                dad.play_sing_animation(dir, false, "");
-            }
+            self.scripts
+                .on_note_hit(false, dir, gameplay.opponent_hit_kind, self.dad.as_mut());
         }
 
         let player_holding_sustain = self.session.is_player_holding_sustain();
@@ -1278,11 +1286,11 @@ impl PlayScene {
             }
         }
 
-        if !self.countdown.active && song_pos >= 0.0 {
+        {
             let cur_step = self.session.conductor.current_step;
             let cur_beat = self.session.conductor.current_beat;
 
-            if gameplay.conductor.step_hit && cur_step >= 0 {
+            if gameplay.conductor.step_hit {
                 self.camera_rig.on_step_hit(cur_step);
                 if let Some(st) = &mut self.stage {
                     st.on_step_hit(cur_step);
@@ -1300,7 +1308,21 @@ impl PlayScene {
                 self.icon_p2.on_step_hit(cur_step);
             }
 
-            if gameplay.conductor.beat_hit && cur_beat >= 0 {
+            if gameplay.conductor.beat_hit {
+                let cues = self.scripts.on_beat_hit(
+                    cur_beat,
+                    self.stage.as_mut(),
+                    self.bf.as_mut(),
+                    self.gf.as_mut(),
+                );
+                if let Some(engine) = audio.as_deref_mut() {
+                    for cue in cues.cues.iter().take(cues.count).flatten() {
+                        let _ = engine.send(AudioCommand::PlaySfx {
+                            slot: cue.slot,
+                            gain: cue.gain,
+                        });
+                    }
+                }
                 if let Some(st) = &mut self.stage {
                     st.on_beat_hit(cur_beat);
                 }
@@ -1317,6 +1339,15 @@ impl PlayScene {
         }
 
         let beat_len_ms = self.session.conductor.beat_length_ms();
+        self.scripts.update(
+            elapsed_s,
+            song_pos,
+            beat_len_ms,
+            self.session.health,
+            self.stage.as_mut(),
+            self.dad.as_ref(),
+            self.gf.as_mut(),
+        );
         if let Some(st) = &mut self.stage {
             st.update(elapsed_s);
         }
@@ -1434,28 +1465,100 @@ impl PlayScene {
     ) {
         match (self.stage.as_ref(), self.gf.as_ref(), self.dad.as_ref(), self.bf.as_ref()) {
             (Some(st), Some(g), Some(d), Some(b)) => {
-                st.draw_with_characters(stage_sprites, cam_pos, cam_zoom, hud_zoom, &[g, d, b]);
+                st.draw_with_characters_and_scripts(
+                    stage_sprites,
+                    cam_pos,
+                    cam_zoom,
+                    hud_zoom,
+                    &[g, d, b],
+                    &self.scripts,
+                    Some(d),
+                    Some(g),
+                );
             }
             (Some(st), Some(g), Some(d), None) => {
-                st.draw_with_characters(stage_sprites, cam_pos, cam_zoom, hud_zoom, &[g, d]);
+                st.draw_with_characters_and_scripts(
+                    stage_sprites,
+                    cam_pos,
+                    cam_zoom,
+                    hud_zoom,
+                    &[g, d],
+                    &self.scripts,
+                    Some(d),
+                    Some(g),
+                );
             }
             (Some(st), Some(g), None, Some(b)) => {
-                st.draw_with_characters(stage_sprites, cam_pos, cam_zoom, hud_zoom, &[g, b]);
+                st.draw_with_characters_and_scripts(
+                    stage_sprites,
+                    cam_pos,
+                    cam_zoom,
+                    hud_zoom,
+                    &[g, b],
+                    &self.scripts,
+                    None,
+                    Some(g),
+                );
             }
             (Some(st), None, Some(d), Some(b)) => {
-                st.draw_with_characters(stage_sprites, cam_pos, cam_zoom, hud_zoom, &[d, b]);
+                st.draw_with_characters_and_scripts(
+                    stage_sprites,
+                    cam_pos,
+                    cam_zoom,
+                    hud_zoom,
+                    &[d, b],
+                    &self.scripts,
+                    Some(d),
+                    None,
+                );
             }
             (Some(st), Some(g), None, None) => {
-                st.draw_with_characters(stage_sprites, cam_pos, cam_zoom, hud_zoom, &[g]);
+                st.draw_with_characters_and_scripts(
+                    stage_sprites,
+                    cam_pos,
+                    cam_zoom,
+                    hud_zoom,
+                    &[g],
+                    &self.scripts,
+                    None,
+                    Some(g),
+                );
             }
             (Some(st), None, Some(d), None) => {
-                st.draw_with_characters(stage_sprites, cam_pos, cam_zoom, hud_zoom, &[d]);
+                st.draw_with_characters_and_scripts(
+                    stage_sprites,
+                    cam_pos,
+                    cam_zoom,
+                    hud_zoom,
+                    &[d],
+                    &self.scripts,
+                    Some(d),
+                    None,
+                );
             }
             (Some(st), None, None, Some(b)) => {
-                st.draw_with_characters(stage_sprites, cam_pos, cam_zoom, hud_zoom, &[b]);
+                st.draw_with_characters_and_scripts(
+                    stage_sprites,
+                    cam_pos,
+                    cam_zoom,
+                    hud_zoom,
+                    &[b],
+                    &self.scripts,
+                    None,
+                    None,
+                );
             }
             (Some(st), None, None, None) => {
-                st.draw(stage_sprites, cam_pos, cam_zoom, hud_zoom);
+                st.draw_with_characters_and_scripts(
+                    stage_sprites,
+                    cam_pos,
+                    cam_zoom,
+                    hud_zoom,
+                    &[],
+                    &self.scripts,
+                    None,
+                    None,
+                );
             }
             (None, g, d, b) => {
                 draw_optional_chars_sorted(stage_sprites, cam_pos, cam_zoom, [g, d, b]);

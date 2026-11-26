@@ -21,6 +21,7 @@ const FLAG_FLIP_X: u32 = 2u;
 const FLAG_FLIP_Y: u32 = 4u;
 const FLAG_PIXEL_SNAP: u32 = 8u;
 const FLAG_ROTATED_90_CCW: u32 = 16u;
+const FLAG_AFFINE: u32 = 32u;
 
 struct SpriteInstanceInput {
     @location(0) pos: vec2<f32>,
@@ -56,15 +57,21 @@ fn vs_main(
 
     let corner = corners[vertex_index % 6u];
 
-    // Rotate local position around `inst.origin` (relative to unrotated top-left).
-    let local_pos = corner * inst.size - inst.origin;
-    let c = cos(inst.rotation);
-    let s = sin(inst.rotation);
-    let rotated_pos = vec2<f32>(
-        local_pos.x * c - local_pos.y * s,
-        local_pos.x * s + local_pos.y * c,
-    );
-    var world_pos = inst.pos + inst.origin + rotated_pos;
+    var world_pos: vec2<f32>;
+    if (inst.flags & FLAG_AFFINE) != 0u {
+        // Exact 2x2 affine quad: `inst.size` = X-edge (m.a*w, m.b*w), `inst.origin` = Y-edge (m.c*h, m.d*h).
+        world_pos = inst.pos + corner.x * inst.size + corner.y * inst.origin;
+    } else {
+        // Rotate local position around `inst.origin` (relative to unrotated top-left).
+        let local_pos = corner * inst.size - inst.origin;
+        let c = cos(inst.rotation);
+        let s = sin(inst.rotation);
+        let rotated_pos = vec2<f32>(
+            local_pos.x * c - local_pos.y * s,
+            local_pos.x * s + local_pos.y * c,
+        );
+        world_pos = inst.pos + inst.origin + rotated_pos;
+    }
 
     if (inst.flags & FLAG_PIXEL_SNAP) != 0u {
         world_pos = round(world_pos);

@@ -13,9 +13,9 @@ use fnfrs_core::paths::AssetLocator;
 use fnfrs_core::schema::song::{SongChartData, SongMetadata, SongNoteData};
 use fnfrs_game::{
     BaseCharacter, CharacterKind, CountdownAssets, CountdownSfx, GameOverAction,
-    GameOverAudioCue, GameOverPhase, GameplaySfxSlots, HealthIcon, InputQueue, NoteStyleAssets,
-    PauseMenuAction, PauseMenuInput, PlayConfig, PlayScene, PlaySceneConfig, PlaySession,
-    ResultsAction, SongEventQueue, Stage, StrumlineVisualStyle,
+    GameOverAudioCue, GameOverPhase, GameplaySfxSlots, HealthIcon, InputQueue, NativeScriptHost,
+    NoteStyleAssets, PauseMenuAction, PauseMenuInput, PlayConfig, PlayScene, PlaySceneConfig,
+    PlaySession, ResultsAction, ScriptSfxSlots, SongEventQueue, Stage, StrumlineVisualStyle,
 };
 use fnfrs_render::{
     BitmapFont, GpuContext, GpuError, MeshBatcher, SpriteBatcher, StackTextBuffer, TextAlign,
@@ -262,18 +262,21 @@ impl ApplicationHandler for App {
         );
 
         let mut sfx_slots = GameplaySfxSlots::default();
+        let mut script_sfx_slots = ScriptSfxSlots::default();
         let mut game_over_loss_sfx_slot = None;
         if let Some(engine) = self.audio.as_mut() {
             let sample_rate = engine.sample_rate();
-            let (miss_slots, loss_slot) = register_all_sfx(
+            let (miss_slots, loss_slot, script_slots) = register_all_sfx(
                 &level_assets,
                 engine,
                 sample_rate,
                 &mut countdown_assets,
                 bf_is_pixel,
+                stage_id,
             );
             sfx_slots = miss_slots;
             game_over_loss_sfx_slot = loss_slot;
+            script_sfx_slots = script_slots;
         }
 
         let initial_config = PlayConfig {
@@ -324,6 +327,24 @@ impl ApplicationHandler for App {
         if let Some((_, sz)) = note_assets.health_bar_tex {
             scene.set_health_bar_size(sz[0], sz[1]);
         }
+        let picospeaker_notes = self
+            .loaded_chart
+            .chart
+            .as_ref()
+            .map(|c| c.get_notes("picospeaker"))
+            .unwrap_or(&[]);
+        let scripts = NativeScriptHost::new(
+            self.loaded_chart.song_id.as_str(),
+            stage_id,
+            dad_id,
+            gf_id,
+            scene.gf.as_ref(),
+            picospeaker_notes,
+            &level_assets,
+            &mut gpu,
+            script_sfx_slots,
+        );
+        scene.attach_scripts(scripts);
         if let Some(meta) = metadata {
             if !meta.play_data.difficulties.is_empty() {
                 let mut diff_refs: Vec<&str> = Vec::with_capacity(meta.play_data.difficulties.len());
@@ -497,19 +518,30 @@ impl ApplicationHandler for App {
             WindowEvent::Resized(new_size) => {
                 state.minimized = new_size.width == 0 || new_size.height == 0;
                 state.gpu.resize(new_size);
-                if !state.minimized && !state.occluded {
+                if state.minimized || state.occluded {
+                    event_loop.set_control_flow(ControlFlow::Wait);
+                } else {
+                    state.last_frame_time = Instant::now();
                     event_loop.set_control_flow(ControlFlow::Poll);
                     state.window.request_redraw();
                 }
             }
             WindowEvent::Occluded(occluded) => {
                 state.occluded = occluded;
-                if !occluded && !state.minimized {
+                if occluded || state.minimized {
+                    event_loop.set_control_flow(ControlFlow::Wait);
+                } else {
+                    state.last_frame_time = Instant::now();
                     event_loop.set_control_flow(ControlFlow::Poll);
                     state.window.request_redraw();
                 }
             }
-            WindowEvent::RedrawRequested if !state.minimized && !state.occluded => {
+            WindowEvent::RedrawRequested
+                if !state.minimized
+                    && !state.occluded
+                    && state.gpu.size.width > 0
+                    && state.gpu.size.height > 0 =>
+            {
                 render_game_frame(state, self.audio.as_mut(), event_loop);
             }
             _ => {}
@@ -533,6 +565,14 @@ fn render_game_frame(
     mut audio: Option<&mut AudioEngine>,
     event_loop: &ActiveEventLoop,
 ) {
+    if state.minimized
+        || state.occluded
+        || state.gpu.size.width == 0
+        || state.gpu.size.height == 0
+    {
+        return;
+    }
+
     let now = Instant::now();
     let elapsed_s = now
         .saturating_duration_since(state.last_frame_time)
@@ -1053,9 +1093,11 @@ fn register_all_sfx(
     sample_rate: u32,
     countdown_assets: &mut CountdownAssets,
     bf_is_pixel: bool,
-) -> (GameplaySfxSlots, Option<usize>) {
-    let mut bank = Vec::with_capacity(8);
+    stage_id: &str,
+) -> (GameplaySfxSlots, Option<usize>, ScriptSfxSlots) {
+    let mut bank = Vec::with_capacity(14);
     let mut slots = GameplaySfxSlots::default();
+    let mut script_slots = ScriptSfxSlots::default();
 
     let miss_names = ["missnote1", "missnote2", "missnote3"];
     for (idx, name) in miss_names.iter().enumerate() {
@@ -1112,10 +1154,39 @@ fn register_all_sfx(
         }
     }
 
+    let stage_lower = stage_id.to_ascii_lowercase();
+    if stage_lower == "spookymansion" || stage_lower == "spookymansionerect" {
+        for (idx, key) in ["thunder_1", "thunder_2"].iter().enumerate() {
+            if let Ok(decoded) = decode_file(&assets.sound(key), sample_rate) {
+                script_slots.thunder[idx] = Some(bank.len());
+                bank.push(decoded);
+            }
+        }
+    } else if stage_lower == "phillytrain" {
+        if let Ok(decoded) = decode_file(&assets.sound("train_passes"), sample_rate) {
+            script_slots.train_passes = Some(bank.len());
+            bank.push(decoded);
+        }
+    } else if stage_lower == "limoride"
+        || stage_lower == "phillystreets"
+        || stage_lower == "phillystreetserect"
+    {
+        let mut week4_assets = assets.clone();
+        week4_assets.set_current_level(Some("week4"));
+        for (idx, key) in ["carPass0", "carPass1"].iter().enumerate() {
+            let decoded = decode_file(&assets.sound(key), sample_rate)
+                .or_else(|_| decode_file(&week4_assets.sound(key), sample_rate));
+            if let Ok(audio) = decoded {
+                script_slots.car_pass[idx] = Some(bank.len());
+                bank.push(audio);
+            }
+        }
+    }
+
     if !bank.is_empty() {
         let _ = engine.register_sfx_bank(bank);
     }
-    (slots, loss_slot)
+    (slots, loss_slot, script_slots)
 }
 
 fn try_load_song_audio(

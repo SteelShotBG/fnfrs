@@ -7,6 +7,7 @@ pub mod input;
 pub mod note_style;
 pub mod play_state;
 pub mod popup;
+pub mod scripts;
 pub mod stage;
 pub mod strumline;
 pub mod sustain;
@@ -41,6 +42,7 @@ pub use play_state::{
     PlayStepEvents,
 };
 pub use popup::{ComboDigitPopUp, JudgementPopUp, PopUpPool};
+pub use scripts::{NativeScriptHost, NoteKindTag, ScriptSfxCue, ScriptSfxSlots, ScriptStepOutput};
 pub use stage::{parse_blend_mode, parse_stage_color, Bopper, Stage, StageProp};
 pub use strumline::{
     evaluate_note_window, HitWindowOutcome, NoteEntity, NoteSplashEntity, ReceptorAnim,
