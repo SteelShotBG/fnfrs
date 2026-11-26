@@ -2,6 +2,7 @@
 //! zero-allocation bitmap/TTF text layout for Friday Night Funkin' V-Slice.
 
 pub mod atlas;
+pub mod atlas_text;
 pub mod batch;
 pub mod gpu;
 pub mod mesh_batch;
@@ -13,6 +14,7 @@ pub use atlas::{
     AnimateAtlas, AnimateSprite, AtlasError, AtlasFrame, EvaluatedPart, LabelSpan, PackerAtlas,
     PrefixFrames, SparrowAtlas, SpritemapInfo,
 };
+pub use atlas_text::{AtlasFont, AtlasTextStyle};
 pub use batch::{
     compute_sprite_corner_uv, BlendMode, FilterMode, SpriteBatchQueue, SpriteBatcher,
     SpriteDrawGroup, SpriteInstance, SPRITE_FLAG_ADJUST_COLOR, SPRITE_FLAG_AFFINE,

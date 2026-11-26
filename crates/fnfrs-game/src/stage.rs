@@ -36,12 +36,13 @@ pub fn parse_stage_color(raw: &str) -> [f32; 4] {
     parse_hex_color(trimmed)
 }
 
-/// Parses a V-Slice stage prop blend string (`""`, `"normal"`, `"add"`, `"screen"`).
+/// Parses a V-Slice stage prop blend string (`""`, `"normal"`, `"add"`, `"screen"`, `"multiply"`).
 #[must_use]
 pub fn parse_blend_mode(blend: &str) -> BlendMode {
     match blend.trim().to_ascii_lowercase().as_str() {
         "add" => BlendMode::Add,
         "screen" => BlendMode::Screen,
+        "multiply" => BlendMode::Multiply,
         _ => BlendMode::Normal,
     }
 }
@@ -268,6 +269,7 @@ pub struct StageProp {
     pub blend: BlendMode,
     pub color: [f32; 4],
     pub adjust_color: Option<[f32; 4]>,
+    pub wiggle: Option<[f32; 4]>,
     pub is_pixel: bool,
     pub is_hud: bool,
     pub visible: bool,
@@ -301,6 +303,7 @@ impl StageProp {
             blend: BlendMode::Normal,
             color: parse_stage_color(color_hex),
             adjust_color: None,
+            wiggle: None,
             is_pixel: false,
             is_hud: false,
             visible: true,
@@ -397,6 +400,7 @@ impl StageProp {
             blend,
             color: prop_color,
             adjust_color: None,
+            wiggle: None,
             is_pixel: data.is_pixel,
             is_hud: false,
             visible: true,
@@ -478,6 +482,7 @@ impl StageProp {
             blend: parse_blend_mode(&data.blend),
             color: prop_color,
             adjust_color: None,
+            wiggle: None,
             is_pixel: data.is_pixel,
             is_hud: false,
             visible: true,
@@ -582,6 +587,8 @@ impl StageProp {
                     .with_flags(flags);
                 if let Some([h, s, b, c]) = self.adjust_color {
                     inst = inst.with_adjust_color(h, s, b, c);
+                } else if let Some([t, f, sp, amp]) = self.wiggle {
+                    inst = inst.with_wiggle(t, f, sp, amp);
                 }
                 batcher.push(*texture, self.blend, filter, inst);
             }
@@ -605,6 +612,7 @@ impl StageProp {
                     blend: self.blend,
                     is_pixel: self.is_pixel,
                     adjust_color: self.adjust_color,
+                    wiggle: self.wiggle,
                     ref_unscaled_size: None,
                 };
                 bop.bank.draw_current(batcher, &params);

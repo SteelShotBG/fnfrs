@@ -444,6 +444,49 @@ impl GpuContext {
             .map(|entry| (entry.width, entry.height))
     }
 
+    /// Updates the pixel buffer of an existing RGBA8 GPU texture in-place without reallocation.
+    pub fn update_texture_rgba8(&self, handle: TextureHandle, rgba: &[u8]) -> Result<(), GpuError> {
+        let entry = self
+            .textures
+            .get(handle.0 as usize)
+            .and_then(|s| s.as_ref())
+            .ok_or(GpuError::InvalidTextureHandle(handle.0))?;
+        let expected = (entry.width as usize) * (entry.height as usize) * 4;
+        if rgba.len() != expected {
+            return Err(GpuError::RgbaByteLengthMismatch {
+                expected,
+                actual: rgba.len(),
+            });
+        }
+        let extent = wgpu::Extent3d {
+            width: entry.width,
+            height: entry.height,
+            depth_or_array_layers: 1,
+        };
+        self.queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &entry._texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            rgba,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(4 * entry.width),
+                rows_per_image: Some(entry.height),
+            },
+            extent,
+        );
+        Ok(())
+    }
+
+    /// Returns the number of live GPU textures currently allocated.
+    #[must_use]
+    pub fn active_texture_count(&self) -> usize {
+        self.textures.iter().filter(|entry| entry.is_some()).count()
+    }
+
     /// Returns the pre-built `wgpu::BindGroup` for `handle`, `filter`, and wrap
     /// mode (`repeat_v = true` for vertically tiled sustain trails).
     #[inline]

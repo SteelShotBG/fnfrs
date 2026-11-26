@@ -11,10 +11,11 @@ use fnfrs_render::{
 };
 
 use crate::character::{
-    apply_camera_transform, draw_animate_parts, upload_png_path, AtlasDrawParams, BaseCharacter,
+    apply_camera_transform, draw_animate_parts, load_animate_source, upload_png_path,
+    AtlasDrawParams, BaseCharacter, CharacterKind, LoadedAtlasSource,
 };
 use crate::input::NoteDirection;
-use crate::stage::Stage;
+use crate::stage::{parse_stage_color, Stage};
 
 /// Compact `Copy` tag classifying V-Slice `note.kind` strings without hot-loop allocations.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -76,6 +77,8 @@ pub struct ScriptSfxSlots {
     pub thunder: [Option<usize>; 2],
     pub train_passes: Option<usize>,
     pub car_pass: [Option<usize>; 2],
+    pub lightning: [Option<usize>; 3],
+    pub door_kick: [Option<usize>; 2],
 }
 
 /// Runtime SFX cue emitted cleanly by [`NativeScriptHost::update`] / `on_beat_hit`.
@@ -445,6 +448,7 @@ impl LoadedAnimateProp {
             blend: BlendMode::Normal,
             is_pixel: false,
             adjust_color: None,
+            wiggle: None,
             ref_unscaled_size: None,
         };
         draw_animate_parts(
@@ -636,13 +640,16 @@ impl ABotSpeaker {
         if self.nene_knife_enabled {
             if let Some(gf) = gf {
                 match self.nene_state {
+                    NeneState::Default => {
+                        gf.on_beat_hit(beat, false);
+                    }
                     NeneState::PreRaise => {
                         gf.play_animation("danceLeft", false, false);
                         gf.has_danced = false;
                     }
                     NeneState::Ready => {
                         if self.blink_countdown <= 0 {
-                            gf.play_animation("idleKnife", false, false);
+                            gf.play_animation("idleKnife", true, false);
                             self.blink_countdown = rng.range_i32(3, 7);
                         } else {
                             self.blink_countdown -= 1;
@@ -1166,14 +1173,235 @@ impl QuadCarTween {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+enum CanState {
+    #[default]
+    Inactive,
+    Arcing,
+    Shot,
+    HitPico,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct SpraycanSlot {
+    state: CanState,
+    pos: [f32; 2],
+    anim_time_s: f32,
+}
+
+#[derive(Debug)]
+struct SpraycanPool {
+    enabled: bool,
+    atlas: Option<AnimateAtlas>,
+    textures: Vec<(TextureHandle, [f32; 2])>,
+    bounds_origin: [f32; 2],
+    bounds_size: [f32; 2],
+    parts_bufs: [Vec<EvaluatedPart>; 4],
+    slots: [SpraycanSlot; 4],
+    gun_cocked_timer_s: f32,
+    darken_timer_s: Option<f32>,
+}
+
+impl Default for SpraycanPool {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            atlas: None,
+            textures: Vec::new(),
+            bounds_origin: [0.0, 0.0],
+            bounds_size: [1.0, 1.0],
+            parts_bufs: Default::default(),
+            slots: [SpraycanSlot::default(); 4],
+            gun_cocked_timer_s: 0.0,
+            darken_timer_s: None,
+        }
+    }
+}
+
+impl SpraycanPool {
+    fn load(song_id: &str, assets: &AssetLocator, gpu: &mut GpuContext) -> Self {
+        if !song_id.eq_ignore_ascii_case("2hot") {
+            return Self::default();
+        }
+        let Some(LoadedAtlasSource::Animate {
+            atlas,
+            textures,
+            bounds_origin,
+            bounds_size,
+        }) = load_animate_source(assets, gpu, "spraycanAtlas", None)
+        else {
+            return Self::default();
+        };
+        Self {
+            enabled: true,
+            atlas: Some(atlas),
+            textures,
+            bounds_origin,
+            bounds_size,
+            parts_bufs: [
+                Vec::with_capacity(24),
+                Vec::with_capacity(24),
+                Vec::with_capacity(24),
+                Vec::with_capacity(24),
+            ],
+            slots: [SpraycanSlot::default(); 4],
+            gun_cocked_timer_s: 0.0,
+            darken_timer_s: None,
+        }
+    }
+
+    fn reset(&mut self) {
+        self.slots = [SpraycanSlot::default(); 4];
+        self.gun_cocked_timer_s = 0.0;
+        self.darken_timer_s = None;
+    }
+
+    fn spawn(&mut self, stage: Option<&Stage>) {
+        if !self.enabled {
+            return;
+        }
+        let pile_pos = stage
+            .and_then(|st| st.get_named_prop("spraycanPile"))
+            .map_or([890.0, 740.0], |p| p.position);
+        for slot in &mut self.slots {
+            if slot.state == CanState::Inactive {
+                slot.state = CanState::Arcing;
+                slot.pos = [pile_pos[0] - 10.0, pile_pos[1] - 550.0];
+                slot.anim_time_s = 0.0;
+                break;
+            }
+        }
+    }
+
+    fn shoot(&mut self) -> bool {
+        if !self.enabled || self.gun_cocked_timer_s <= 0.0 {
+            return false;
+        }
+        self.gun_cocked_timer_s = 0.0;
+        for slot in &mut self.slots {
+            if slot.state == CanState::Arcing {
+                slot.state = CanState::Shot;
+                slot.anim_time_s = 0.0;
+                self.darken_timer_s = Some(0.0);
+                return true;
+            }
+        }
+        false
+    }
+
+    fn update(&mut self, elapsed_s: f32, mut stage: Option<&mut Stage>) {
+        if !self.enabled {
+            return;
+        }
+        let dt = elapsed_s.max(0.0);
+        if self.gun_cocked_timer_s > 0.0 {
+            self.gun_cocked_timer_s = (self.gun_cocked_timer_s - dt).max(0.0);
+        }
+        let Some(atlas) = &self.atlas else {
+            return;
+        };
+        let fps = atlas.frame_rate().max(1.0);
+        for (idx, slot) in self.slots.iter_mut().enumerate() {
+            if slot.state == CanState::Inactive {
+                self.parts_bufs[idx].clear();
+                continue;
+            }
+            slot.anim_time_s += dt;
+            let label = match slot.state {
+                CanState::Inactive => continue,
+                CanState::Arcing => "Can Start",
+                CanState::Shot => "Can Shot",
+                CanState::HitPico => "Hit Pico",
+            };
+            let dur = atlas.label_span(label).map_or(1, |s| s.duration.max(1));
+            let frame = (slot.anim_time_s * fps).floor() as u32;
+            if frame >= dur {
+                if slot.state == CanState::Arcing {
+                    slot.state = CanState::HitPico;
+                    slot.anim_time_s = 0.0;
+                    atlas.evaluate_label("Hit Pico", 0, &mut self.parts_bufs[idx]);
+                } else {
+                    slot.state = CanState::Inactive;
+                    self.parts_bufs[idx].clear();
+                }
+            } else {
+                atlas.evaluate_label(label, frame, &mut self.parts_bufs[idx]);
+            }
+        }
+
+        if let Some(t) = &mut self.darken_timer_s {
+            *t += dt;
+            let c = if *t < 1.0 / 24.0 {
+                0.067
+            } else {
+                let u = ((*t - 1.0 / 24.0) / 1.4).clamp(0.0, 1.0);
+                0.133 + (1.0 - 0.133) * u
+            };
+            if let Some(st) = stage.as_deref_mut() {
+                for prop in &mut st.props {
+                    prop.color = [c, c, c, prop.color[3]];
+                }
+            }
+            if *t >= 1.45 {
+                if let Some(st) = stage {
+                    for prop in &mut st.props {
+                        prop.color = [1.0, 1.0, 1.0, prop.color[3]];
+                    }
+                }
+                self.darken_timer_s = None;
+            }
+        }
+    }
+
+    fn draw(&self, batcher: &mut SpriteBatcher, cam_pos: [f32; 2], cam_zoom: f32) {
+        if !self.enabled || self.atlas.is_none() {
+            return;
+        }
+        for (idx, slot) in self.slots.iter().enumerate() {
+            if slot.state == CanState::Inactive || self.parts_bufs[idx].is_empty() {
+                continue;
+            }
+            let params = AtlasDrawParams {
+                pos: slot.pos,
+                scale: [1.0, 1.0],
+                anim_offsets: [0.0, 0.0],
+                global_offsets: [0.0, 0.0],
+                scroll_factor: [1.0, 1.0],
+                cam_pos,
+                cam_zoom,
+                angle_deg: 0.0,
+                flip_x: false,
+                flip_y: false,
+                color: [1.0, 1.0, 1.0, 1.0],
+                alpha: 1.0,
+                blend: BlendMode::Normal,
+                is_pixel: false,
+                adjust_color: None,
+                wiggle: None,
+                ref_unscaled_size: None,
+            };
+            draw_animate_parts(
+                batcher,
+                &self.textures,
+                &self.parts_bufs[idx],
+                self.bounds_origin,
+                self.bounds_size,
+                &params,
+                false,
+                false,
+            );
+        }
+    }
+}
+
 #[derive(Debug)]
 enum StageScript {
     None,
     SpookyMansion {
-        #[allow(dead_code)]
         is_erect: bool,
         lightning_strike_beat: i32,
         lightning_strike_offset: i32,
+        flash_timer_s: Option<f32>,
     },
     PhillyTrain {
         light_alpha: f32,
@@ -1186,6 +1414,14 @@ enum StageScript {
         train_timer_s: f32,
         train_sound_ms: f32,
     },
+    PhillyBlazin {
+        sky_blur_tex: Option<(TextureHandle, [f32; 2])>,
+        sky_scroll_x: f32,
+        rain_time_scale: f32,
+        lightning_timer_s: f32,
+        lightning_fade_s: f32,
+        lightning_fading: bool,
+    },
     LimoRide {
         fast_car_can_drive: bool,
         fast_car_active: bool,
@@ -1193,6 +1429,9 @@ enum StageScript {
         fast_car_vx: f32,
     },
     School,
+    SchoolEvil {
+        time_s: f32,
+    },
     TankmanBattlefield {
         is_erect: bool,
         clouds_tex: Option<(TextureHandle, [f32; 2])>,
@@ -1212,6 +1451,50 @@ enum StageScript {
         car1: QuadCarTween,
         car2: QuadCarTween,
     },
+    Sserafim {
+        yunjin: Option<Box<BaseCharacter>>,
+        chaewon: Option<Box<BaseCharacter>>,
+        eunchae: Option<Box<BaseCharacter>>,
+        dust_mid_tex: Option<(TextureHandle, [f32; 2])>,
+        dust_back_tex: Option<(TextureHandle, [f32; 2])>,
+        dust_time_s: f32,
+        visible: [bool; 6],
+        singing: [bool; 6],
+        lights_enabled: bool,
+        light_colors: [[f32; 4]; 8],
+        light_durs: [f32; 8],
+        light_ints: [f32; 8],
+        light_count: usize,
+        light_idx: usize,
+        pulse_alpha: f32,
+        pulse_dur: f32,
+        truck_light_alpha: f32,
+        truck_light_dur: f32,
+        cover_alpha: f32,
+        dark_amount: f32,
+        dark_start: f32,
+        dark_target: f32,
+        dark_elapsed: f32,
+        dark_dur: f32,
+        kick_waiting_door: bool,
+    },
+}
+
+fn place_extra_sserafim_char(
+    mut ch: BaseCharacter,
+    x: f32,
+    y: f32,
+    scroll: [f32; 2],
+    hsbc: [f32; 4],
+) -> Box<BaseCharacter> {
+    let origin = ch.character_origin();
+    ch.position = [x - origin[0], y - origin[1]];
+    ch.original_position = ch.position;
+    ch.scroll_factor = scroll;
+    ch.z_index = 1000;
+    ch.adjust_color = Some(hsbc);
+    ch.reset_character(false);
+    Box::new(ch)
 }
 
 /// Active fullscreen `RuntimeRainShader` parameters passed to `RainPostPass`.
@@ -1234,6 +1517,7 @@ pub struct NativeScriptHost {
     speaker_shooter: SpeakerShooter,
     abot: ABotSpeaker,
     runners: TankmanRunners,
+    spraycans: SpraycanPool,
     sfx: ScriptSfxSlots,
     rng: ScriptRng,
     rain_enabled: bool,
@@ -1269,8 +1553,9 @@ impl NativeScriptHost {
                 is_erect: stage_lower == "spookymansionerect",
                 lightning_strike_beat: 0,
                 lightning_strike_offset: 8,
+                flash_timer_s: None,
             }
-        } else if stage_lower == "phillytrain" {
+        } else if stage_lower == "phillytrain" || stage_lower == "phillytrainerect" {
             StageScript::PhillyTrain {
                 light_alpha: 1.0,
                 cur_light: 0,
@@ -1282,6 +1567,20 @@ impl NativeScriptHost {
                 train_timer_s: 0.0,
                 train_sound_ms: 0.0,
             }
+        } else if stage_lower == "phillyblazin" {
+            let sky_blur_tex = upload_png_path(
+                gpu,
+                Some("phillyBlazin/skyBlur"),
+                &assets.image("phillyBlazin/skyBlur"),
+            );
+            StageScript::PhillyBlazin {
+                sky_blur_tex,
+                sky_scroll_x: 0.0,
+                rain_time_scale: 1.0,
+                lightning_timer_s: 3.0,
+                lightning_fade_s: 0.0,
+                lightning_fading: false,
+            }
         } else if stage_lower == "limoride" {
             StageScript::LimoRide {
                 fast_car_can_drive: true,
@@ -1291,6 +1590,8 @@ impl NativeScriptHost {
             }
         } else if stage_lower == "school" || stage_lower == "schoolerect" {
             StageScript::School
+        } else if stage_lower == "schoolevil" || stage_lower == "schoolevilerect" {
+            StageScript::SchoolEvil { time_s: 0.0 }
         } else if stage_lower == "tankmanbattlefield" || stage_lower == "tankmanbattlefielderect" {
             let is_erect = stage_lower == "tankmanbattlefielderect";
             let clouds_tex = if !is_erect {
@@ -1323,6 +1624,42 @@ impl NativeScriptHost {
                 car1: QuadCarTween::default(),
                 car2: QuadCarTween::default(),
             }
+        } else if stage_lower == "sserafim" {
+            let yunjin = BaseCharacter::load_by_id("sserafim-yunjin", CharacterKind::Other, assets, gpu)
+                .map(|c| place_extra_sserafim_char(c, -621.0, 154.0, [0.95, 0.95], [0.0; 4]));
+            let chaewon = BaseCharacter::load_by_id("sserafim-chaewon", CharacterKind::Other, assets, gpu)
+                .map(|c| place_extra_sserafim_char(c, 687.0, 98.0, [0.95, 0.95], [0.0; 4]));
+            let eunchae = BaseCharacter::load_by_id("sserafim-eunchae", CharacterKind::Other, assets, gpu)
+                .map(|c| place_extra_sserafim_char(c, 770.0, 675.0, [0.97, 0.97], [0.0; 4]));
+            let dust_mid_tex = upload_png_path(gpu, Some("dustMid"), &assets.image("dust/dustMid"));
+            let dust_back_tex = upload_png_path(gpu, Some("dustBack"), &assets.image("dust/dustBack"));
+            StageScript::Sserafim {
+                yunjin,
+                chaewon,
+                eunchae,
+                dust_mid_tex,
+                dust_back_tex,
+                dust_time_s: 0.0,
+                visible: [true, false, false, false, false, false],
+                singing: [false; 6],
+                lights_enabled: false,
+                light_colors: [[1.0; 4]; 8],
+                light_durs: [0.5; 8],
+                light_ints: [0.8; 8],
+                light_count: 0,
+                light_idx: 0,
+                pulse_alpha: 0.0,
+                pulse_dur: 0.5,
+                truck_light_alpha: 0.0,
+                truck_light_dur: 0.5,
+                cover_alpha: 0.0,
+                dark_amount: 0.0,
+                dark_start: 0.0,
+                dark_target: 0.0,
+                dark_elapsed: 0.0,
+                dark_dur: 0.0,
+                kick_waiting_door: false,
+            }
         } else {
             StageScript::None
         };
@@ -1334,21 +1671,29 @@ impl NativeScriptHost {
         let speaker_shooter = SpeakerShooter::new(gf_id, picospeaker_notes);
         let abot = ABotSpeaker::load(gf_id, stage_id, gf, assets, gpu);
         let runners = TankmanRunners::load(stage_id, picospeaker_notes, assets, gpu, &mut rng);
+        let spraycans = SpraycanPool::load(song_id, assets, gpu);
 
-        let rain_enabled = stage_lower == "phillystreetserect";
-        let (rain_start_intensity, rain_end_intensity) = if rain_enabled {
+        let rain_enabled = stage_lower == "phillystreetserect"
+            || stage_lower == "phillyblazin"
+            || stage_lower == "spookymansionerect";
+        let (rain_scale, rain_start_intensity, rain_end_intensity) = if stage_lower == "phillyblazin"
+        {
+            (3.6, 0.5, 0.5)
+        } else if stage_lower == "spookymansionerect" {
+            (7.2, 0.4, 0.4)
+        } else if stage_lower == "phillystreetserect" {
             let song_lower = song_id.to_ascii_lowercase();
             if song_lower == "darnell" {
-                (0.002, 0.01)
+                (3.6, 0.002, 0.01)
             } else if song_lower == "lit-up" {
-                (0.01, 0.02)
+                (3.6, 0.01, 0.02)
             } else if song_lower == "2hot" {
-                (0.02, 0.04)
+                (3.6, 0.02, 0.04)
             } else {
-                (0.01, 0.02)
+                (3.6, 0.01, 0.02)
             }
         } else {
-            (0.0, 0.0)
+            (3.6, 0.0, 0.0)
         };
 
         Self {
@@ -1359,11 +1704,12 @@ impl NativeScriptHost {
             speaker_shooter,
             abot,
             runners,
+            spraycans,
             sfx,
             rng,
             rain_enabled,
             rain_time: 1.0,
-            rain_scale: 3.6,
+            rain_scale,
             rain_intensity: rain_start_intensity,
             rain_start_intensity,
             rain_end_intensity,
@@ -1383,6 +1729,7 @@ impl NativeScriptHost {
             speaker_shooter: SpeakerShooter::default(),
             abot: ABotSpeaker::default(),
             runners: TankmanRunners::default(),
+            spraycans: SpraycanPool::default(),
             sfx: ScriptSfxSlots::default(),
             rng: ScriptRng(0x5A17_C0DE),
             rain_enabled: false,
@@ -1403,7 +1750,7 @@ impl NativeScriptHost {
         }
     }
 
-    /// Returns active fullscreen rain shader uniforms when rendering `phillyStreetsErect`.
+    /// Returns active fullscreen rain shader uniforms when rendering `phillyStreetsErect` / `phillyBlazin` / `spookyMansionErect`.
     #[must_use]
     pub fn rain_params(&self) -> Option<RainShaderParams> {
         if self.rain_enabled && self.rain_intensity > 0.0 {
@@ -1418,70 +1765,385 @@ impl NativeScriptHost {
         }
     }
 
+    /// True for songs/stages that hide opponent strumline notes (`blazin`, `sserafim`/`spaghetti`).
+    #[must_use]
+    pub fn hides_opponent_strumline(&self) -> bool {
+        self.song_id.eq_ignore_ascii_case("blazin")
+            || self.song_id.eq_ignore_ascii_case("spaghetti")
+            || self.stage_id_lower == "sserafim"
+    }
+
+    /// True for songs that center player strumline notes horizontally (`blazin`).
+    #[must_use]
+    pub fn centers_player_strumline(&self) -> bool {
+        self.song_id.eq_ignore_ascii_case("blazin")
+    }
+
+    /// True for stages that suppress standard combo popups (`sserafim`).
+    #[must_use]
+    pub fn hides_popups(&self) -> bool {
+        self.stage_id_lower == "sserafim"
+    }
+
     /// Applies one-time initial stage setup & Erect `AdjustColor` shaders after placement.
     pub fn on_stage_ready(
         &mut self,
         mut stage: Option<&mut Stage>,
-        bf: Option<&mut BaseCharacter>,
-        dad: Option<&mut BaseCharacter>,
-        gf: Option<&mut BaseCharacter>,
+        mut bf: Option<&mut BaseCharacter>,
+        mut dad: Option<&mut BaseCharacter>,
+        mut gf: Option<&mut BaseCharacter>,
     ) {
-        apply_erect_adjust_color(&self.stage_id_lower, stage.as_deref_mut(), bf, dad, gf);
-        if let StageScript::School = self.stage_script {
-            if self.song_id.eq_ignore_ascii_case("roses") {
+        apply_erect_adjust_color(
+            &self.stage_id_lower,
+            stage.as_deref_mut(),
+            bf.as_deref_mut(),
+            dad.as_deref_mut(),
+            gf.as_deref_mut(),
+        );
+        match &mut self.stage_script {
+            StageScript::SpookyMansion { is_erect: true, .. } => {
                 if let Some(st) = stage {
-                    if let Some(freaks) = st.get_named_prop_mut("freaks") {
-                        if let Some(bop) = &mut freaks.bopper {
-                            bop.idle_suffix.clear();
-                            bop.idle_suffix.push_str("-scared");
-                            bop.dance(true);
+                    for nm in ["bgLight", "stairsLight"] {
+                        if let Some(p) = st.get_named_prop_mut(nm) {
+                            p.alpha = 0.0;
                         }
                     }
                 }
             }
-        } else if let StageScript::TankmanBattlefield { is_erect: true, .. } = self.stage_script {
-            if let Some(st) = stage {
-                if let Some(bricks) = st.get_named_prop_mut("tankBricks") {
-                    bricks.position = [445.0, 774.0];
+            StageScript::PhillyBlazin { .. } => {
+                if let Some(st) = stage {
+                    for (nm, blend) in [
+                        ("skyAdditive", BlendMode::Add),
+                        ("lightning", BlendMode::Normal),
+                        ("foregroundMultiply", BlendMode::Multiply),
+                        ("additionalLighten", BlendMode::Add),
+                    ] {
+                        if let Some(p) = st.get_named_prop_mut(nm) {
+                            p.visible = false;
+                            p.blend = blend;
+                        }
+                    }
+                }
+                if let Some(b) = bf {
+                    b.color = [0.871, 0.871, 0.871, 1.0];
+                }
+                if let Some(d) = dad {
+                    d.color = [0.871, 0.871, 0.871, 1.0];
+                }
+                if let Some(g) = gf {
+                    g.color = [0.533, 0.533, 0.533, 1.0];
                 }
             }
-        } else if let StageScript::PhillyTrain { .. } = self.stage_script {
-            if let Some(st) = stage {
-                if let Some(train) = st.get_named_prop_mut("train") {
-                    train.position[0] = 1480.0;
-                }
-            }
-        } else if let StageScript::LimoRide { .. } = self.stage_script {
-            if let Some(st) = stage {
-                if let Some(car) = st.get_named_prop_mut("fastCar") {
-                    car.position = [-12600.0, 360.0];
-                }
-            }
-        } else if let StageScript::PhillyStreets { .. } = self.stage_script {
-            if let Some(st) = stage {
-                if let Some(traffic) = st.get_named_prop_mut("phillyTraffic") {
-                    if let Some(bop) = &mut traffic.bopper {
-                        bop.play_animation("togreen", true);
+            StageScript::School => {
+                if self.song_id.eq_ignore_ascii_case("roses") {
+                    if let Some(st) = stage {
+                        if let Some(freaks) = st.get_named_prop_mut("freaks") {
+                            if let Some(bop) = &mut freaks.bopper {
+                                bop.idle_suffix.clear();
+                                bop.idle_suffix.push_str("-scared");
+                                bop.dance(true);
+                            }
+                        }
                     }
                 }
             }
+            StageScript::TankmanBattlefield { is_erect: true, .. } => {
+                if let Some(st) = stage {
+                    if let Some(bricks) = st.get_named_prop_mut("tankBricks") {
+                        bricks.position = [445.0, 774.0];
+                    }
+                }
+            }
+            StageScript::PhillyTrain { .. } => {
+                if let Some(st) = stage {
+                    if let Some(train) = st.get_named_prop_mut("train") {
+                        train.position[0] = 1480.0;
+                    }
+                }
+            }
+            StageScript::LimoRide { .. } => {
+                if let Some(st) = stage {
+                    if let Some(car) = st.get_named_prop_mut("fastCar") {
+                        car.position = [-12600.0, 360.0];
+                    }
+                }
+            }
+            StageScript::PhillyStreets { .. } => {
+                if let Some(st) = stage {
+                    if let Some(traffic) = st.get_named_prop_mut("phillyTraffic") {
+                        if let Some(bop) = &mut traffic.bopper {
+                            bop.play_animation("togreen", true);
+                        }
+                    }
+                }
+            }
+            StageScript::Sserafim {
+                yunjin,
+                chaewon,
+                eunchae,
+                visible,
+                ..
+            } => {
+                if let Some(st) = stage {
+                    for nm in [
+                        "solidCover",
+                        "backTablesCutscene",
+                        "burgerCutscene",
+                        "backLightColor",
+                        "backLightWhite",
+                        "truckLight1",
+                        "truckLight2",
+                        "truckDoor",
+                    ] {
+                        if let Some(p) = st.get_named_prop_mut(nm) {
+                            p.alpha = 0.0;
+                        }
+                    }
+                }
+                if let Some(y) = yunjin.as_deref_mut() {
+                    y.visible = visible[0];
+                }
+                if let Some(d) = dad {
+                    d.visible = visible[1];
+                }
+                if let Some(c) = chaewon.as_deref_mut() {
+                    c.visible = visible[2];
+                }
+                if let Some(e) = eunchae.as_deref_mut() {
+                    e.visible = visible[3];
+                }
+                if let Some(b) = bf {
+                    b.visible = visible[4];
+                }
+            }
+            _ => {}
         }
     }
 
+    /// Returns `true` when the active stage/character script manages GF's beat dancing directly
+    /// (e.g., Nene's knife state machine).
+    #[must_use]
+    pub fn owns_gf_dance(&self) -> bool {
+        self.abot.nene_knife_enabled
+    }
+
+    /// Dispatches song chart custom events (such as `sserafimShow`, `sserafimSing`, etc.).
+    #[allow(clippy::too_many_arguments)]
+    pub fn on_song_event(
+        &mut self,
+        event_kind: &str,
+        value: &serde_json::Value,
+        mut stage: Option<&mut Stage>,
+        mut bf: Option<&mut BaseCharacter>,
+        mut dad: Option<&mut BaseCharacter>,
+        cam_flash_dur: &mut Option<f32>,
+    ) -> ScriptStepOutput {
+        let mut out = ScriptStepOutput::default();
+        let StageScript::Sserafim {
+            yunjin,
+            chaewon,
+            eunchae,
+            visible,
+            singing,
+            lights_enabled,
+            light_colors,
+            light_durs,
+            light_ints,
+            light_count,
+            light_idx,
+            truck_light_alpha,
+            truck_light_dur,
+            cover_alpha,
+            dark_amount,
+            dark_start,
+            dark_target,
+            dark_elapsed,
+            dark_dur,
+            kick_waiting_door,
+            ..
+        } = &mut self.stage_script
+        else {
+            return out;
+        };
+
+        match event_kind {
+            "sserafimShow" => {
+                if let Some(arr) = value.get("visible").and_then(|v| v.as_array()) {
+                    for (i, v) in arr.iter().take(5).enumerate() {
+                        if let Some(b) = v.as_bool() {
+                            visible[i] = b;
+                        }
+                    }
+                    if let Some(y) = yunjin.as_deref_mut() {
+                        y.visible = visible[0];
+                    }
+                    if let Some(d) = dad {
+                        d.visible = visible[1];
+                    }
+                    if let Some(c) = chaewon.as_deref_mut() {
+                        c.visible = visible[2];
+                    }
+                    if let Some(e) = eunchae.as_deref_mut() {
+                        e.visible = visible[3];
+                    }
+                    if let Some(b) = bf {
+                        b.visible = visible[4];
+                    }
+                }
+            }
+            "sserafimSing" => {
+                if let Some(arr) = value.get("singing").and_then(|v| v.as_array()) {
+                    for (i, v) in arr.iter().take(6).enumerate() {
+                        if let Some(b) = v.as_bool() {
+                            singing[i] = b;
+                        }
+                    }
+                }
+            }
+            "sserafimDark" => {
+                *dark_start = *dark_amount;
+                *dark_target = value
+                    .get("amount")
+                    .and_then(|v| v.as_f64())
+                    .unwrap_or(0.0) as f32;
+                *dark_dur = value
+                    .get("duration")
+                    .and_then(|v| v.as_f64())
+                    .unwrap_or(0.1)
+                    .max(0.0) as f32;
+                *dark_elapsed = 0.0;
+                if *dark_dur <= 0.0 {
+                    *dark_amount = *dark_target;
+                }
+            }
+            "sserafimLights" => {
+                let amt = value
+                    .get("amount")
+                    .and_then(|v| v.as_f64())
+                    .unwrap_or(0.7) as f32;
+                let dur = value
+                    .get("duration")
+                    .and_then(|v| v.as_f64())
+                    .unwrap_or(0.5)
+                    .max(0.05) as f32;
+                *truck_light_alpha = amt.clamp(0.0, 1.0);
+                *truck_light_dur = dur;
+                if let Some(st) = stage {
+                    for nm in ["truckLight1", "truckLight2"] {
+                        if let Some(p) = st.get_named_prop_mut(nm) {
+                            p.alpha = *truck_light_alpha;
+                        }
+                    }
+                }
+            }
+            "sserafimCover" => {
+                let vis = value
+                    .get("visible")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                *cover_alpha = if vis { 1.0 } else { 0.0 };
+                if let Some(st) = stage {
+                    if let Some(p) = st.get_named_prop_mut("solidCover") {
+                        p.alpha = *cover_alpha;
+                    }
+                }
+            }
+            "sserafimFlash" => {
+                let dur = value
+                    .get("duration")
+                    .and_then(|v| v.as_f64())
+                    .unwrap_or(1.0) as f32;
+                *cam_flash_dur = Some(dur);
+            }
+            "sserafimPulseLights" => {
+                *lights_enabled = value
+                    .get("enabled")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                if let Some(cols) = value.get("colors").and_then(|v| v.as_array()) {
+                    *light_count = cols.len().min(8);
+                    for (i, c) in cols.iter().take(*light_count).enumerate() {
+                        if let Some(s) = c.as_str() {
+                            light_colors[i] = parse_stage_color(s);
+                        }
+                    }
+                }
+                if let Some(durs) = value.get("durations").and_then(|v| v.as_array()) {
+                    for (i, d) in durs.iter().take(8).enumerate() {
+                        if let Some(val) = d.as_f64() {
+                            light_durs[i] = val.max(0.05) as f32;
+                        }
+                    }
+                }
+                if let Some(ints) = value.get("intensities").and_then(|v| v.as_array()) {
+                    for (i, val) in ints.iter().take(8).enumerate() {
+                        if let Some(n) = val.as_f64() {
+                            light_ints[i] = n.clamp(0.0, 1.0) as f32;
+                        }
+                    }
+                }
+                *light_idx = 0;
+            }
+            "sserafimKick" => {
+                let is_final = value
+                    .get("final")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                if is_final {
+                    if let Some(y) = yunjin.as_deref_mut() {
+                        y.play_animation("kick2", true, false);
+                        y.dance_every = 1.0;
+                    }
+                    *kick_waiting_door = true;
+                    if let Some(slot) = self.sfx.door_kick[1] {
+                        out.push(slot, 1.0);
+                    }
+                } else {
+                    if let Some(y) = yunjin.as_deref_mut() {
+                        y.play_animation("kick1", true, false);
+                    }
+                    if let Some(slot) = self.sfx.door_kick[0] {
+                        out.push(slot, 1.0);
+                    }
+                }
+            }
+            _ => {}
+        }
+        out
+    }
+
     /// Resets stage/character script timers cleanly on song retry.
-    pub fn reset(&mut self, stage: Option<&mut Stage>) {
+    pub fn reset(&mut self, mut stage: Option<&mut Stage>) {
         self.spirit_trail.reset();
         self.speaker_shooter.reset();
         self.abot.reset();
         self.runners.reset();
+        self.spraycans.reset();
+        if let Some(st) = stage.as_deref_mut() {
+            for prop in &mut st.props {
+                prop.color = [1.0, 1.0, 1.0, 1.0];
+                prop.wiggle = None;
+            }
+        }
         match &mut self.stage_script {
             StageScript::SpookyMansion {
+                is_erect,
                 lightning_strike_beat,
                 lightning_strike_offset,
-                ..
+                flash_timer_s,
             } => {
                 *lightning_strike_beat = 0;
                 *lightning_strike_offset = 8;
+                *flash_timer_s = None;
+                if *is_erect {
+                    if let Some(st) = stage {
+                        for nm in ["bgLight", "stairsLight"] {
+                            if let Some(p) = st.get_named_prop_mut(nm) {
+                                p.alpha = 0.0;
+                            }
+                        }
+                    }
+                }
             }
             StageScript::PhillyTrain {
                 train_moving,
@@ -1507,6 +2169,20 @@ impl NativeScriptHost {
                         train.position[0] = 1480.0;
                     }
                 }
+            }
+            StageScript::PhillyBlazin {
+                sky_scroll_x,
+                rain_time_scale,
+                lightning_timer_s,
+                lightning_fade_s,
+                lightning_fading,
+                ..
+            } => {
+                *sky_scroll_x = 0.0;
+                *rain_time_scale = 1.0;
+                *lightning_timer_s = 3.0;
+                *lightning_fade_s = 0.0;
+                *lightning_fading = false;
             }
             StageScript::LimoRide {
                 fast_car_can_drive,
@@ -1564,7 +2240,49 @@ impl NativeScriptHost {
                     }
                 }
             }
-            _ => {}
+            StageScript::Sserafim {
+                yunjin,
+                chaewon,
+                eunchae,
+                visible,
+                singing,
+                lights_enabled,
+                pulse_alpha,
+                truck_light_alpha,
+                cover_alpha,
+                dark_amount,
+                kick_waiting_door,
+                ..
+            } => {
+                *visible = [true, false, false, false, false, false];
+                *singing = [false; 6];
+                *lights_enabled = false;
+                *pulse_alpha = 0.0;
+                *truck_light_alpha = 0.0;
+                *cover_alpha = 0.0;
+                *dark_amount = 0.0;
+                *kick_waiting_door = false;
+                if let Some(y) = yunjin.as_deref_mut() {
+                    y.reset_character(false);
+                    y.visible = true;
+                }
+                if let Some(c) = chaewon.as_deref_mut() {
+                    c.reset_character(false);
+                    c.visible = false;
+                }
+                if let Some(e) = eunchae.as_deref_mut() {
+                    e.reset_character(false);
+                    e.visible = false;
+                }
+                if let Some(st) = stage {
+                    for nm in ["solidCover", "backLightColor", "backLightWhite", "truckLight1", "truckLight2", "truckDoor"] {
+                        if let Some(p) = st.get_named_prop_mut(nm) {
+                            p.alpha = 0.0;
+                        }
+                    }
+                }
+            }
+            StageScript::None | StageScript::School | StageScript::SchoolEvil { .. } | StageScript::TankmanBattlefield { .. } => {}
         }
     }
 
@@ -1577,14 +2295,44 @@ impl NativeScriptHost {
         }
     }
 
-    /// Plays note-kind-aware singing/special animations for player & opponent (`parents-christmas`, `spooky-dark`, etc.).
+    /// Plays note-kind-aware singing/special animations for player & opponent (`parents-christmas`, `spooky-dark`, `sserafim`, `2hot`, etc.).
     pub fn on_note_hit(
         &mut self,
         is_player: bool,
         dir: NoteDirection,
         kind: NoteKindTag,
         mut character: Option<&mut BaseCharacter>,
+        stage: Option<&Stage>,
     ) {
+        if let StageScript::PhillyBlazin { rain_time_scale, .. } = &mut self.stage_script {
+            *rain_time_scale += 0.7;
+        }
+        if let StageScript::Sserafim {
+            yunjin,
+            chaewon,
+            eunchae,
+            singing,
+            ..
+        } = &mut self.stage_script
+        {
+            if is_player && kind != NoteKindTag::NoAnim {
+                if singing[0] {
+                    if let Some(y) = yunjin.as_deref_mut() {
+                        y.play_sing_animation(dir, false, "");
+                    }
+                }
+                if singing[2] {
+                    if let Some(c) = chaewon.as_deref_mut() {
+                        c.play_sing_animation(dir, false, "");
+                    }
+                }
+                if singing[3] {
+                    if let Some(e) = eunchae.as_deref_mut() {
+                        e.play_sing_animation(dir, false, "");
+                    }
+                }
+            }
+        }
         if kind == NoteKindTag::NoAnim {
             return;
         }
@@ -1592,6 +2340,7 @@ impl NativeScriptHost {
             match kind {
                 NoteKindTag::Weekend1CockGun => {
                     self.abot.look_right();
+                    self.spraycans.gun_cocked_timer_s = 1.0;
                     if let Some(c) = character {
                         c.play_animation("cock", true, true);
                     }
@@ -1599,6 +2348,7 @@ impl NativeScriptHost {
                 }
                 NoteKindTag::Weekend1FireGun => {
                     self.abot.look_right();
+                    self.spraycans.shoot();
                     if let Some(c) = character {
                         c.play_animation("shoot", true, true);
                     }
@@ -1641,6 +2391,7 @@ impl NativeScriptHost {
                     return;
                 }
                 NoteKindTag::Weekend1KickCan => {
+                    self.spraycans.spawn(stage);
                     if let Some(c) = character.as_deref_mut() {
                         c.play_animation("kickCan", true, true);
                     }
@@ -1668,12 +2419,13 @@ impl NativeScriptHost {
         }
     }
 
-    /// Beat-triggered stage & character scripts (`spookyMansion`, `phillyTrain`, `limoRide`, `tankman`, `phillyStreets`, `nene`/`abot`).
+    /// Beat-triggered stage & character scripts (`spookyMansion`, `phillyTrain`, `limoRide`, `tankman`, `phillyStreets`, `sserafim`, `nene`/`abot`).
     pub fn on_beat_hit(
         &mut self,
         beat: i32,
         mut stage: Option<&mut Stage>,
-        bf: Option<&mut BaseCharacter>,
+        mut bf: Option<&mut BaseCharacter>,
+        mut dad: Option<&mut BaseCharacter>,
         mut gf: Option<&mut BaseCharacter>,
     ) -> ScriptStepOutput {
         let mut out = ScriptStepOutput::default();
@@ -1681,9 +2433,10 @@ impl NativeScriptHost {
 
         match &mut self.stage_script {
             StageScript::SpookyMansion {
+                is_erect,
                 lightning_strike_beat,
                 lightning_strike_offset,
-                ..
+                flash_timer_s,
             } => {
                 let trigger_silent = beat == 4 && self.song_id.eq_ignore_ascii_case("spookeez");
                 let trigger_rand = beat >= 0
@@ -1698,7 +2451,25 @@ impl NativeScriptHost {
                             out.push(slot, 1.0);
                         }
                     }
-                    if let Some(st) = stage {
+                    if *is_erect {
+                        *flash_timer_s = Some(0.0);
+                        if let Some(st) = stage {
+                            for nm in ["bgLight", "stairsLight"] {
+                                if let Some(p) = st.get_named_prop_mut(nm) {
+                                    p.alpha = 1.0;
+                                }
+                            }
+                        }
+                        if let Some(b) = bf.as_deref_mut() {
+                            b.alpha = 0.0;
+                        }
+                        if let Some(d) = dad.as_deref_mut() {
+                            d.alpha = 0.0;
+                        }
+                        if let Some(g) = gf.as_deref_mut() {
+                            g.alpha = 0.0;
+                        }
+                    } else if let Some(st) = stage {
                         if let Some(bg) = st.get_named_prop_mut("halloweenBG") {
                             if let Some(bop) = &mut bg.bopper {
                                 bop.play_animation("lightning", true);
@@ -1925,7 +2696,51 @@ impl NativeScriptHost {
                     }
                 }
             }
-            StageScript::None | StageScript::School | StageScript::TankmanBattlefield { .. } => {}
+            StageScript::Sserafim {
+                yunjin,
+                chaewon,
+                eunchae,
+                lights_enabled,
+                light_colors,
+                light_durs,
+                light_ints,
+                light_count,
+                light_idx,
+                pulse_alpha,
+                pulse_dur,
+                ..
+            } => {
+                if let Some(y) = yunjin.as_deref_mut() {
+                    y.on_beat_hit(beat, false);
+                }
+                if let Some(c) = chaewon.as_deref_mut() {
+                    c.on_beat_hit(beat, false);
+                }
+                if let Some(e) = eunchae.as_deref_mut() {
+                    e.on_beat_hit(beat, false);
+                }
+                if *lights_enabled && *light_count > 0 {
+                    let idx = *light_idx % *light_count;
+                    *light_idx = (*light_idx + 1) % *light_count;
+                    let col = light_colors[idx];
+                    *pulse_dur = light_durs[idx].max(0.05);
+                    *pulse_alpha = (light_ints[idx] * 0.8).clamp(0.0, 1.0);
+                    if let Some(st) = stage {
+                        if let Some(p) = st.get_named_prop_mut("backLightColor") {
+                            p.color = col;
+                            p.alpha = *pulse_alpha;
+                        }
+                        if let Some(p) = st.get_named_prop_mut("backLightWhite") {
+                            p.alpha = (*pulse_alpha * 0.85).clamp(0.0, 1.0);
+                        }
+                    }
+                }
+            }
+            StageScript::None
+            | StageScript::School
+            | StageScript::SchoolEvil { .. }
+            | StageScript::PhillyBlazin { .. }
+            | StageScript::TankmanBattlefield { .. } => {}
         }
 
         out
@@ -1940,15 +2755,24 @@ impl NativeScriptHost {
         beat_length_ms: f64,
         health: f32,
         mut stage: Option<&mut Stage>,
-        dad: Option<&BaseCharacter>,
+        mut bf: Option<&mut BaseCharacter>,
+        mut dad: Option<&mut BaseCharacter>,
         mut gf: Option<&mut BaseCharacter>,
-    ) {
-        self.spirit_trail.update(elapsed_s, dad);
+    ) -> ScriptStepOutput {
+        let mut out = ScriptStepOutput::default();
+        self.spirit_trail.update(elapsed_s, dad.as_deref());
         self.speaker_shooter
             .update(song_pos_ms, gf.as_deref_mut(), &mut self.rng);
         self.runners.update(elapsed_s, song_pos_ms, &mut self.rng);
+        self.spraycans.update(elapsed_s, stage.as_deref_mut());
+
         if self.rain_enabled {
-            self.rain_time += elapsed_s.max(0.0);
+            let scale_mult = if let StageScript::PhillyBlazin { rain_time_scale, .. } = &self.stage_script {
+                *rain_time_scale
+            } else {
+                1.0
+            };
+            self.rain_time += elapsed_s.max(0.0) * scale_mult;
             if song_pos_ms >= 0.0 && self.rain_duration_ms > 1.0 {
                 let t = (song_pos_ms / self.rain_duration_ms).clamp(0.0, 1.0) as f32;
                 self.rain_intensity = self.rain_start_intensity
@@ -1960,6 +2784,71 @@ impl NativeScriptHost {
 
         let mut train_passing_flag = false;
         match &mut self.stage_script {
+            StageScript::SpookyMansion {
+                is_erect: true,
+                flash_timer_s: Some(t),
+                ..
+            } => {
+                *t += elapsed_s.max(0.0);
+                if *t < 0.06 {
+                    // Initial bright flash (silhouettes)
+                } else if *t < 0.12 {
+                    if let Some(ref mut st) = stage {
+                        for nm in ["bgLight", "stairsLight"] {
+                            if let Some(p) = st.get_named_prop_mut(nm) {
+                                p.alpha = 0.0;
+                            }
+                        }
+                    }
+                    if let Some(b) = bf.as_deref_mut() {
+                        b.alpha = 1.0;
+                    }
+                    if let Some(d) = dad.as_deref_mut() {
+                        d.alpha = 1.0;
+                    }
+                    if let Some(g) = gf.as_deref_mut() {
+                        g.alpha = 1.0;
+                    }
+                } else if *t < 1.62 {
+                    let fade = ((*t - 0.12) / 1.5).clamp(0.0, 1.0);
+                    if let Some(ref mut st) = stage {
+                        for nm in ["bgLight", "stairsLight"] {
+                            if let Some(p) = st.get_named_prop_mut(nm) {
+                                p.alpha = 1.0 - fade;
+                            }
+                        }
+                    }
+                    if let Some(b) = bf.as_deref_mut() {
+                        b.alpha = fade;
+                    }
+                    if let Some(d) = dad.as_deref_mut() {
+                        d.alpha = fade;
+                    }
+                    if let Some(g) = gf.as_deref_mut() {
+                        g.alpha = fade;
+                    }
+                } else {
+                    if let Some(ref mut st) = stage {
+                        for nm in ["bgLight", "stairsLight"] {
+                            if let Some(p) = st.get_named_prop_mut(nm) {
+                                p.alpha = 0.0;
+                            }
+                        }
+                    }
+                    if let Some(b) = bf.as_deref_mut() {
+                        b.alpha = 1.0;
+                    }
+                    if let Some(d) = dad.as_deref_mut() {
+                        d.alpha = 1.0;
+                    }
+                    if let Some(g) = gf.as_deref_mut() {
+                        g.alpha = 1.0;
+                    }
+                    if let StageScript::SpookyMansion { flash_timer_s, .. } = &mut self.stage_script {
+                        *flash_timer_s = None;
+                    }
+                }
+            }
             StageScript::PhillyTrain {
                 light_alpha,
                 train_moving,
@@ -2016,6 +2905,120 @@ impl NativeScriptHost {
                     }
                 }
                 train_passing_flag = *train_started;
+            }
+            StageScript::PhillyBlazin {
+                sky_scroll_x,
+                rain_time_scale,
+                lightning_timer_s,
+                lightning_fade_s,
+                lightning_fading,
+                ..
+            } => {
+                let dt = elapsed_s.max(0.0);
+                *sky_scroll_x -= dt * 35.0;
+                let lerp_t = 1.0 - (-dt * 1.535 * 3.0).exp();
+                *rain_time_scale += (0.02 - *rain_time_scale) * lerp_t;
+
+                *lightning_timer_s -= dt;
+                if *lightning_timer_s <= 0.0 {
+                    *lightning_timer_s = self.rng.range_f32(7.0, 15.0);
+                    *lightning_fading = true;
+                    *lightning_fade_s = 0.0;
+                    if let Some(ref mut st) = stage {
+                        let lx = if self.rng.bool_pct(65) {
+                            self.rng.range_i32(-250, 280) as f32
+                        } else {
+                            self.rng.range_i32(780, 900) as f32
+                        };
+                        if let Some(p) = st.get_named_prop_mut("lightning") {
+                            p.visible = true;
+                            p.position[0] = lx;
+                            if let Some(bop) = &mut p.bopper {
+                                bop.play_animation("strike", true);
+                            }
+                        }
+                        if let Some(p) = st.get_named_prop_mut("skyAdditive") {
+                            p.visible = true;
+                            p.alpha = 0.7;
+                        }
+                        if let Some(p) = st.get_named_prop_mut("foregroundMultiply") {
+                            p.visible = true;
+                            p.alpha = 0.64;
+                        }
+                        if let Some(p) = st.get_named_prop_mut("additionalLighten") {
+                            p.visible = true;
+                            p.alpha = 0.3;
+                        }
+                    }
+                    let s_idx = (self.rng.next_u32() as usize) % 3;
+                    if let Some(slot) = self.sfx.lightning[s_idx] {
+                        out.push(slot, 1.0);
+                    }
+                }
+
+                if *lightning_fading {
+                    *lightning_fade_s += dt;
+                    let t_full = (*lightning_fade_s / 1.5).clamp(0.0, 1.0);
+                    let t_fast = (*lightning_fade_s / 0.3).clamp(0.0, 1.0);
+                    if let Some(ref mut st) = stage {
+                        if let Some(p) = st.get_named_prop_mut("skyAdditive") {
+                            p.alpha = 0.7 * (1.0 - t_full);
+                            if t_full >= 1.0 {
+                                p.visible = false;
+                            }
+                        }
+                        if let Some(p) = st.get_named_prop_mut("foregroundMultiply") {
+                            p.alpha = 0.64 * (1.0 - t_full);
+                            if t_full >= 1.0 {
+                                p.visible = false;
+                            }
+                        }
+                        if let Some(p) = st.get_named_prop_mut("additionalLighten") {
+                            p.alpha = 0.3 * (1.0 - t_fast);
+                            if t_fast >= 1.0 {
+                                p.visible = false;
+                            }
+                        }
+                        if t_full >= 1.0 {
+                            if let Some(p) = st.get_named_prop_mut("lightning") {
+                                p.visible = false;
+                            }
+                        }
+                    }
+                    let char_c = 0.376 + (0.871 - 0.376) * t_fast;
+                    let gf_c = 0.376 + (0.533 - 0.376) * t_fast;
+                    if let Some(b) = bf.as_deref_mut() {
+                        b.color = [char_c, char_c, char_c, 1.0];
+                    }
+                    if let Some(d) = dad.as_deref_mut() {
+                        d.color = [char_c, char_c, char_c, 1.0];
+                    }
+                    if let Some(g) = gf.as_deref_mut() {
+                        g.color = [gf_c, gf_c, gf_c, 1.0];
+                    }
+                    if t_full >= 1.0 {
+                        *lightning_fading = false;
+                    }
+                }
+            }
+            StageScript::SchoolEvil { time_s } => {
+                *time_s += elapsed_s.max(0.0);
+                let t = *time_s;
+                if let Some(ref mut st) = stage {
+                    for (nm, w) in [
+                        ("backTrees", [t, 1.6, 1.6, 0.011]),
+                        ("school", [t, 2.0, 4.0, 0.017]),
+                        ("street", [t, 2.0, 4.0, 0.007]),
+                        ("trees", [t, 2.0, 4.0, 0.007]),
+                        ("evilstreet", [t, 2.0, 4.0, 0.007]),
+                        ("backspikes", [t, 1.6, 1.6, 0.011]),
+                        ("backspike", [t, 2.0, 4.0, 0.010]),
+                    ] {
+                        if let Some(p) = st.get_named_prop_mut(nm) {
+                            p.wiggle = Some(w);
+                        }
+                    }
+                }
             }
             StageScript::LimoRide {
                 fast_car_can_drive,
@@ -2109,14 +3112,90 @@ impl NativeScriptHost {
                     }
                 }
             }
+            StageScript::Sserafim {
+                yunjin,
+                chaewon,
+                eunchae,
+                dust_time_s,
+                pulse_alpha,
+                pulse_dur,
+                truck_light_alpha,
+                truck_light_dur,
+                dark_amount,
+                dark_start,
+                dark_target,
+                dark_elapsed,
+                dark_dur,
+                kick_waiting_door,
+                ..
+            } => {
+                let dt = elapsed_s.max(0.0);
+                *dust_time_s += dt;
+                if let Some(y) = yunjin.as_deref_mut() {
+                    y.update(dt, beat_length_ms, false);
+                    if *kick_waiting_door && y.current_frame() >= 23 {
+                        *kick_waiting_door = false;
+                        if let Some(ref mut st) = stage {
+                            if let Some(d) = st.get_named_prop_mut("truckDoor") {
+                                d.alpha = 1.0;
+                            }
+                        }
+                    }
+                }
+                if let Some(c) = chaewon.as_deref_mut() {
+                    c.update(dt, beat_length_ms, false);
+                }
+                if let Some(e) = eunchae.as_deref_mut() {
+                    e.update(dt, beat_length_ms, false);
+                }
+                if *pulse_alpha > 0.0 {
+                    *pulse_alpha = (*pulse_alpha - dt / (*pulse_dur).max(0.05)).max(0.0);
+                    if let Some(ref mut st) = stage {
+                        if let Some(p) = st.get_named_prop_mut("backLightColor") {
+                            p.alpha = *pulse_alpha;
+                        }
+                        if let Some(p) = st.get_named_prop_mut("backLightWhite") {
+                            p.alpha = (*pulse_alpha * 0.85).clamp(0.0, 1.0);
+                        }
+                    }
+                }
+                if *truck_light_alpha > 0.0 {
+                    *truck_light_alpha =
+                        (*truck_light_alpha - dt / (*truck_light_dur).max(0.05)).max(0.0);
+                    if let Some(ref mut st) = stage {
+                        for nm in ["truckLight1", "truckLight2"] {
+                            if let Some(p) = st.get_named_prop_mut(nm) {
+                                p.alpha = *truck_light_alpha;
+                            }
+                        }
+                    }
+                }
+                if *dark_dur > 0.0 {
+                    *dark_elapsed += dt;
+                    let t = (*dark_elapsed / *dark_dur).clamp(0.0, 1.0);
+                    *dark_amount = *dark_start + (*dark_target - *dark_start) * t;
+                    if t >= 1.0 {
+                        *dark_dur = 0.0;
+                    }
+                }
+                let shade = (1.0 - *dark_amount).clamp(0.0, 1.0);
+                if let Some(ref mut st) = stage {
+                    for prop in &mut st.props {
+                        if prop.name.as_deref() != Some("solidCover") {
+                            prop.color = [shade, shade, shade, prop.color[3]];
+                        }
+                    }
+                }
+            }
             _ => {}
         }
 
         self.abot.update(elapsed_s, health, train_passing_flag, gf);
+        out
     }
 
-    /// Draws script-injected stage layers (`tankClouds`, `phillySkybox`, `TankmanSpriteGroup`,
-    /// `SpiritTrail`, `ABotSpeaker`) cleanly interleaved in `[z_min, z_max)` ascending order.
+    /// Draws script-injected stage layers (`tankClouds`, `phillySkybox`, `phillyBlazin/skyBlur`,
+    /// `TankmanSpriteGroup`, `SpraycanPool`, `Sserafim` members/dust, `SpiritTrail`, `ABotSpeaker`).
     #[allow(clippy::too_many_arguments)]
     pub fn draw_range(
         &self,
@@ -2148,6 +3227,23 @@ impl NativeScriptHost {
                     cam_zoom,
                 );
             }
+            StageScript::PhillyBlazin {
+                sky_blur_tex: Some((tex, tex_sz)),
+                sky_scroll_x,
+                ..
+            } if in_range(10) => {
+                draw_tiled_x(
+                    batcher,
+                    *tex,
+                    *tex_sz,
+                    [-700.0, -120.0],
+                    1.0,
+                    [0.0, 0.0],
+                    *sky_scroll_x,
+                    cam_pos,
+                    cam_zoom,
+                );
+            }
             StageScript::TankmanBattlefield {
                 is_erect: false,
                 clouds_tex: Some((tex, tex_sz)),
@@ -2166,7 +3262,60 @@ impl NativeScriptHost {
                     cam_zoom,
                 );
             }
+            StageScript::Sserafim {
+                yunjin,
+                chaewon,
+                eunchae,
+                dust_mid_tex,
+                dust_back_tex,
+                dust_time_s,
+                ..
+            } => {
+                if in_range(1000) {
+                    if let Some(y) = yunjin.as_deref() {
+                        y.draw(batcher, cam_pos, cam_zoom);
+                    }
+                    if let Some(c) = chaewon.as_deref() {
+                        c.draw(batcher, cam_pos, cam_zoom);
+                    }
+                    if let Some(e) = eunchae.as_deref() {
+                        e.draw(batcher, cam_pos, cam_zoom);
+                    }
+                }
+                if in_range(2000) {
+                    if let Some((tex, sz)) = dust_mid_tex {
+                        draw_tiled_x(
+                            batcher,
+                            *tex,
+                            *sz,
+                            [-650.0, -200.0],
+                            1.5,
+                            [1.1, 1.1],
+                            *dust_time_s * 350.0,
+                            cam_pos,
+                            cam_zoom,
+                        );
+                    }
+                    if let Some((tex, sz)) = dust_back_tex {
+                        draw_tiled_x(
+                            batcher,
+                            *tex,
+                            *sz,
+                            [-650.0, -250.0],
+                            1.5,
+                            [1.15, 1.15],
+                            -*dust_time_s * 300.0,
+                            cam_pos,
+                            cam_zoom,
+                        );
+                    }
+                }
+            }
             _ => {}
+        }
+
+        if self.spraycans.enabled && in_range(290) {
+            self.spraycans.draw(batcher, cam_pos, cam_zoom);
         }
 
         if self.runners.enabled && in_range(self.runners.z_index) {

@@ -1,4 +1,5 @@
 pub mod character;
+pub mod dialogue;
 pub mod level;
 pub mod notestyle;
 pub mod song;

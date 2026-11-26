@@ -1,6 +1,9 @@
 pub mod camera;
 pub mod character;
 pub mod countdown;
+pub mod cutscene;
+pub mod debug_display;
+pub mod dialogue;
 pub mod events;
 pub mod hud;
 pub mod input;
@@ -9,9 +12,11 @@ pub mod note_style;
 pub mod play_state;
 pub mod popup;
 pub mod scripts;
+pub mod sound_tray;
 pub mod stage;
 pub mod strumline;
 pub mod sustain;
+pub mod video;
 
 pub use camera::{
     Camera2D, CameraRig, FlxEase, CAMERA_BOP_DECAY_RATE, DEFAULT_HUD_BOP_INTENSITY,

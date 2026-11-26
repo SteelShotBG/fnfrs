@@ -113,6 +113,8 @@ pub struct PlaySession {
     pub is_paused: bool,
     pub is_player_dying: bool,
     pub sfx_slots: GameplaySfxSlots,
+    pub hide_opponent_strumline: bool,
+    pub hide_popups: bool,
 
     score_text_buf: [u8; 32],
     score_text_len: usize,
@@ -196,6 +198,8 @@ impl PlaySession {
             is_paused: false,
             is_player_dying: false,
             sfx_slots: GameplaySfxSlots::default(),
+            hide_opponent_strumline: false,
+            hide_popups: false,
             score_text_buf: [0u8; 32],
             score_text_len: 0,
             strum_hitbox_height: STRUMLINE_SIZE,
@@ -260,6 +264,8 @@ impl PlaySession {
             is_paused: false,
             is_player_dying: false,
             sfx_slots: GameplaySfxSlots::default(),
+            hide_opponent_strumline: false,
+            hide_popups: false,
             score_text_buf: [0u8; 32],
             score_text_len: 0,
             strum_hitbox_height: STRUMLINE_SIZE,
@@ -605,18 +611,25 @@ impl PlaySession {
         if scoreable {
             self.tallies.total_notes_hit += 1;
             self.apply_score(points, Some(judgement), health_change, breaks_combo);
+            let j_idx = match judgement {
+                Judgement::Sick => 0,
+                Judgement::Good => 1,
+                Judgement::Bad => 2,
+                Judgement::Shit => 3,
+                Judgement::Miss => 0,
+            };
             self.popups.spawn_rating(
                 judgement,
-                [260.0, 96.0],
-                [0.0, 0.0],
+                style.popup_rating_sizes[j_idx],
+                style.popup_rating_offsets[j_idx],
                 self.conductor.beat_length_ms(),
-                style.is_pixel,
+                style.popup_rating_pixel[j_idx] || style.is_pixel,
             );
             self.popups.spawn_combo(
                 self.tallies.combo,
-                [0.0, 0.0],
+                style.popup_digit_offsets[0],
                 self.conductor.beat_length_ms(),
-                style.is_pixel,
+                style.popup_digit_pixel[0] || style.is_pixel,
             );
         }
 
@@ -725,49 +738,101 @@ impl PlaySession {
         font_tex: TextureHandle,
     ) {
         let song_pos = self.conductor.song_position_ms;
-        self.opponent_strumline
-            .draw(bg_sprites, fg_sprites, mesh_batcher, style, note_assets, song_pos);
+        if !self.hide_opponent_strumline {
+            self.opponent_strumline
+                .draw(bg_sprites, fg_sprites, mesh_batcher, style, note_assets, song_pos);
+        }
         self.player_strumline
             .draw(bg_sprites, fg_sprites, mesh_batcher, style, note_assets, song_pos);
 
-        // Judgement & combo popups.
-        for (_, rating) in self.popups.ratings.iter_alive() {
-            let (label, color): (&str, [f32; 4]) = match rating.judgement {
-                Judgement::Sick => ("SICK!", [0.22, 0.94, 1.0, rating.alpha]),
-                Judgement::Good => ("GOOD!", [0.35, 0.95, 0.45, rating.alpha]),
-                Judgement::Bad => ("BAD", [1.0, 0.72, 0.25, rating.alpha]),
-                Judgement::Shit => ("SHIT", [0.85, 0.30, 0.30, rating.alpha]),
-                Judgement::Miss => ("MISS", [0.75, 0.15, 0.20, rating.alpha]),
-            };
-            font.draw_bytes_outlined(
-                fg_sprites,
-                font_tex,
-                label.as_bytes(),
-                [(rating.x + 80.0).round(), (rating.y + 30.0).round()],
-                &TextStyle {
-                    scale: if font.line_height() <= 10.0 { 4.0 } else { 2.0 },
-                    color,
-                    ..Default::default()
-                },
-                [0.0, 0.0, 0.0, 1.0],
-            );
+        // Judgement & combo popups (real V-Slice `ui/popup/*` PNG sprites, falling back to text).
+        if !self.hide_popups {
+            for (_, rating) in self.popups.ratings.iter_alive() {
+            let drawn_sprite = note_assets
+                .and_then(|na| na.popup_rating_sprite(rating.judgement))
+                .and_then(|asset| asset.tex.map(|tex| (asset, tex)));
+            if let Some((asset, (tex, tex_sz))) = drawn_sprite {
+                let sz = [tex_sz[0] * asset.scale, tex_sz[1] * asset.scale];
+                let pos = if asset.is_pixel || rating.is_pixel {
+                    [rating.x.round(), rating.y.round()]
+                } else {
+                    [rating.x, rating.y]
+                };
+                let filter = if asset.is_pixel || rating.is_pixel {
+                    fnfrs_render::FilterMode::Nearest
+                } else {
+                    fnfrs_render::FilterMode::Linear
+                };
+                fg_sprites.push(
+                    tex,
+                    fnfrs_render::BlendMode::Normal,
+                    filter,
+                    fnfrs_render::SpriteInstance::new(pos, sz)
+                        .with_color([1.0, 1.0, 1.0, rating.alpha * asset.alpha]),
+                );
+            } else {
+                let (label, color): (&str, [f32; 4]) = match rating.judgement {
+                    Judgement::Sick => ("SICK!", [0.22, 0.94, 1.0, rating.alpha]),
+                    Judgement::Good => ("GOOD!", [0.35, 0.95, 0.45, rating.alpha]),
+                    Judgement::Bad => ("BAD", [1.0, 0.72, 0.25, rating.alpha]),
+                    Judgement::Shit => ("SHIT", [0.85, 0.30, 0.30, rating.alpha]),
+                    Judgement::Miss => ("MISS", [0.75, 0.15, 0.20, rating.alpha]),
+                };
+                font.draw_bytes_outlined(
+                    fg_sprites,
+                    font_tex,
+                    label.as_bytes(),
+                    [(rating.x + 80.0).round(), (rating.y + 30.0).round()],
+                    &TextStyle {
+                        scale: if font.line_height() <= 10.0 { 4.0 } else { 2.0 },
+                        color,
+                        ..Default::default()
+                    },
+                    [0.0, 0.0, 0.0, 1.0],
+                );
+            }
         }
 
         let mut digit_byte = [b'0'; 1];
         for (_, digit) in self.popups.digits.iter_alive() {
-            digit_byte[0] = b'0' + (digit.digit % 10);
-            font.draw_bytes_outlined(
-                fg_sprites,
-                font_tex,
-                &digit_byte,
-                [digit.x.round(), digit.y.round()],
-                &TextStyle {
-                    scale: if font.line_height() <= 10.0 { 3.5 } else { 1.75 },
-                    color: [1.0, 1.0, 1.0, digit.alpha],
-                    ..Default::default()
-                },
-                [0.0, 0.0, 0.0, 1.0],
-            );
+            let drawn_sprite = note_assets
+                .and_then(|na| na.popup_digit_sprite(digit.digit))
+                .and_then(|asset| asset.tex.map(|tex| (asset, tex)));
+            if let Some((asset, (tex, tex_sz))) = drawn_sprite {
+                let sz = [tex_sz[0] * asset.scale, tex_sz[1] * asset.scale];
+                let pos = if asset.is_pixel || digit.is_pixel {
+                    [digit.x.round(), digit.y.round()]
+                } else {
+                    [digit.x, digit.y]
+                };
+                let filter = if asset.is_pixel || digit.is_pixel {
+                    fnfrs_render::FilterMode::Nearest
+                } else {
+                    fnfrs_render::FilterMode::Linear
+                };
+                fg_sprites.push(
+                    tex,
+                    fnfrs_render::BlendMode::Normal,
+                    filter,
+                    fnfrs_render::SpriteInstance::new(pos, sz)
+                        .with_color([1.0, 1.0, 1.0, digit.alpha * asset.alpha]),
+                );
+            } else {
+                digit_byte[0] = b'0' + (digit.digit % 10);
+                font.draw_bytes_outlined(
+                    fg_sprites,
+                    font_tex,
+                    &digit_byte,
+                    [digit.x.round(), digit.y.round()],
+                    &TextStyle {
+                        scale: if font.line_height() <= 10.0 { 3.5 } else { 1.75 },
+                        color: [1.0, 1.0, 1.0, digit.alpha],
+                        ..Default::default()
+                    },
+                    [0.0, 0.0, 0.0, 1.0],
+                );
+            }
+        }
         }
 
         // V-Slice health bar (`PlayState.initHealthBar`, `Constants.COLOR_HEALTH_BAR_*`).
@@ -826,7 +891,7 @@ impl PlaySession {
             scale: score_scale,
             color: [1.0, 1.0, 1.0, 1.0],
             align: TextAlign::Left,
-            letter_spacing: -1.0,
+            letter_spacing: 0.0,
             ..Default::default()
         };
         font.draw_bytes_outlined(
@@ -1047,6 +1112,11 @@ impl PlayScene {
         if let Some(dur) = self.scene_config.song_duration_ms {
             scripts.set_song_duration_ms(dur);
         }
+        self.session.hide_opponent_strumline = scripts.hides_opponent_strumline();
+        self.session.hide_popups = scripts.hides_popups();
+        if scripts.centers_player_strumline() {
+            self.session.player_strumline.center_horizontally();
+        }
         scripts.on_stage_ready(
             self.stage.as_mut(),
             self.bf.as_mut(),
@@ -1136,7 +1206,17 @@ impl PlayScene {
 
         if self.game_over.phase != GameOverPhase::Inactive {
             inputs.clear();
+            self.camera_rig.update(elapsed_s);
             if let Some(bf) = &mut self.bf {
+                let target_anim = match self.game_over.phase {
+                    GameOverPhase::FirstDeath => "firstDeath",
+                    GameOverPhase::DeathLoop => "deathLoop",
+                    GameOverPhase::ConfirmRetry | GameOverPhase::Exiting => "deathConfirm",
+                    GameOverPhase::Inactive => "firstDeath",
+                };
+                if bf.current_animation() != target_anim && bf.has_animation(target_anim) {
+                    bf.play_animation(target_anim, true, true);
+                }
                 bf.update(elapsed_s, self.session.conductor.beat_length_ms(), false);
             }
             return out;
@@ -1214,6 +1294,9 @@ impl PlayScene {
             if let Some(bf) = &mut self.bf {
                 bf.is_dead = true;
                 bf.play_animation("firstDeath", true, true);
+                let focus = bf.get_camera_focus_point();
+                self.camera_rig.cam_game.set_target(focus[0], focus[1]);
+                self.camera_rig.cam_game.default_zoom = 1.05;
             }
             out.game_over_events = self.game_over.trigger_death();
             return out;
@@ -1234,12 +1317,26 @@ impl PlayScene {
             let opponent_tween = &mut self.opponent_scroll_tween;
             let scripts = &mut self.scripts;
 
+            let mut pending_flash_dur: Option<f32> = None;
+            let mut event_cues = crate::scripts::ScriptStepOutput::default();
             self.event_queue.update(song_pos, |ev| {
                 if let GameEventAction::FocusCamera { target, .. } = &ev.action {
                     scripts.on_focus_character(
                         *target == CameraFocusTarget::Player,
                         *target == CameraFocusTarget::Opponent,
                     );
+                } else if let GameEventAction::Custom { event_kind, value } = &ev.action {
+                    let c = scripts.on_song_event(
+                        event_kind,
+                        value,
+                        stage.as_deref_mut(),
+                        bf.as_deref_mut(),
+                        dad.as_deref_mut(),
+                        &mut pending_flash_dur,
+                    );
+                    for cue in c.cues.iter().take(c.count).flatten() {
+                        event_cues.push(cue.slot, cue.gain);
+                    }
                 }
                 apply_song_event(
                     ev,
@@ -1256,6 +1353,17 @@ impl PlayScene {
                     opponent_tween,
                 );
             });
+            if let Some(dur) = pending_flash_dur {
+                self.camera_rig.cam_game.flash([1.0, 1.0, 1.0, 1.0], dur);
+            }
+            if let Some(ref mut engine) = audio {
+                for cue in event_cues.cues.iter().take(event_cues.count).flatten() {
+                    let _ = engine.send(AudioCommand::PlaySfx {
+                        slot: cue.slot,
+                        gain: cue.gain,
+                    });
+                }
+            }
         }
 
         if let Some(speed) = self.player_scroll_tween.update(elapsed_s) {
@@ -1266,8 +1374,13 @@ impl PlayScene {
         }
 
         if let Some(dir) = gameplay.player_hit_dir {
-            self.scripts
-                .on_note_hit(true, dir, gameplay.player_hit_kind, self.bf.as_mut());
+            self.scripts.on_note_hit(
+                true,
+                dir,
+                gameplay.player_hit_kind,
+                self.bf.as_mut(),
+                self.stage.as_ref(),
+            );
         } else if gameplay.missed_note || gameplay.ghost_missed {
             if let Some(dir) = gameplay.missed_dir {
                 if let Some(bf) = &mut self.bf {
@@ -1277,8 +1390,13 @@ impl PlayScene {
         }
 
         if let Some(dir) = gameplay.opponent_hit_dir {
-            self.scripts
-                .on_note_hit(false, dir, gameplay.opponent_hit_kind, self.dad.as_mut());
+            self.scripts.on_note_hit(
+                false,
+                dir,
+                gameplay.opponent_hit_kind,
+                self.dad.as_mut(),
+                self.stage.as_ref(),
+            );
         }
 
         let player_holding_sustain = self.session.is_player_holding_sustain();
@@ -1321,9 +1439,10 @@ impl PlayScene {
                     cur_beat,
                     self.stage.as_mut(),
                     self.bf.as_mut(),
+                    self.dad.as_mut(),
                     self.gf.as_mut(),
                 );
-                if let Some(engine) = audio {
+                if let Some(ref mut engine) = audio {
                     for cue in cues.cues.iter().take(cues.count).flatten() {
                         let _ = engine.send(AudioCommand::PlaySfx {
                             slot: cue.slot,
@@ -1340,22 +1459,33 @@ impl PlayScene {
                 if let Some(dad) = &mut self.dad {
                     dad.on_beat_hit(cur_beat, false);
                 }
-                if let Some(gf) = &mut self.gf {
-                    gf.on_beat_hit(cur_beat, false);
+                if !self.scripts.owns_gf_dance() {
+                    if let Some(gf) = &mut self.gf {
+                        gf.on_beat_hit(cur_beat, false);
+                    }
                 }
             }
         }
 
         let beat_len_ms = self.session.conductor.beat_length_ms();
-        self.scripts.update(
+        let update_cues = self.scripts.update(
             elapsed_s,
             song_pos,
             beat_len_ms,
             self.session.health,
             self.stage.as_mut(),
-            self.dad.as_ref(),
+            self.bf.as_mut(),
+            self.dad.as_mut(),
             self.gf.as_mut(),
         );
+        if let Some(ref mut engine) = audio {
+            for cue in update_cues.cues.iter().take(update_cues.count).flatten() {
+                let _ = engine.send(AudioCommand::PlaySfx {
+                    slot: cue.slot,
+                    gain: cue.gain,
+                });
+            }
+        }
         if let Some(st) = &mut self.stage {
             st.update(elapsed_s);
         }
@@ -1421,6 +1551,21 @@ impl PlayScene {
         let cam_zoom = self.camera_rig.cam_game.effective_zoom();
         let hud_zoom = self.camera_rig.cam_hud.effective_zoom();
 
+        if self.game_over.phase != GameOverPhase::Inactive {
+            if let Some(bf) = &self.bf {
+                bf.draw(stage_sprites, cam_pos, cam_zoom);
+            }
+            self.game_over
+                .draw(overlay_sprites, style.white_texture, font, font_tex);
+            return;
+        }
+
+        if self.results.is_active {
+            self.results
+                .draw(overlay_sprites, style.white_texture, font, font_tex);
+            return;
+        }
+
         self.draw_world_layer(stage_sprites, cam_pos, cam_zoom, hud_zoom);
 
         self.session.draw(
@@ -1457,10 +1602,6 @@ impl PlayScene {
         }
 
         self.pause_menu
-            .draw(overlay_sprites, style.white_texture, font, font_tex);
-        self.game_over
-            .draw(overlay_sprites, style.white_texture, font, font_tex);
-        self.results
             .draw(overlay_sprites, style.white_texture, font, font_tex);
     }
 

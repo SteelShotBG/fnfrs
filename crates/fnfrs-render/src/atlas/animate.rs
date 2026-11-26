@@ -105,6 +105,7 @@ struct CompiledKeyframe {
 
 #[derive(Debug, Clone)]
 struct CompiledLayer {
+    is_mask: bool,
     frames: Vec<CompiledKeyframe>,
 }
 
@@ -390,8 +391,11 @@ impl AnimateAtlas {
         }
 
         // Layers in Animate JSON are ordered top-to-bottom, so iterate in reverse for painter's
-        // draw order (bottom layer drawn first).
+        // draw order (bottom layer drawn first). Skip mask/clipper/guide layers (`LT: "Clp"`).
         for layer in timeline.layers.iter().rev() {
+            if layer.is_mask {
+                continue;
+            }
             let Some(kf) = find_keyframe(&layer.frames, frame_idx) else {
                 continue;
             };
@@ -565,7 +569,11 @@ fn compile_timeline(
         }
 
         frames.sort_by_key(|kf| kf.index);
-        layers.push(CompiledLayer { frames });
+        let is_mask = matches!(
+            raw_layer.layer_type.as_deref(),
+            Some("Clp" | "Clipper" | "Gd" | "Guide")
+        );
+        layers.push(CompiledLayer { is_mask, frames });
     }
 
     CompiledTimeline {
@@ -690,6 +698,8 @@ struct LegacyTimeline {
 
 #[derive(Deserialize)]
 struct LegacyLayer {
+    #[serde(rename = "Layer_type", default)]
+    layer_type: Option<String>,
     #[serde(rename = "Frames", default)]
     frames: Vec<LegacyKeyframe>,
 }
@@ -809,6 +819,7 @@ impl LegacyTimeline {
                 .layers
                 .into_iter()
                 .map(|l| RawLayer {
+                    layer_type: l.layer_type,
                     frames: l
                         .frames
                         .into_iter()
@@ -928,6 +939,8 @@ struct RawTimeline {
 
 #[derive(Deserialize)]
 struct RawLayer {
+    #[serde(rename = "LT", default)]
+    layer_type: Option<String>,
     #[serde(rename = "FR", default)]
     frames: Vec<RawKeyframe>,
 }

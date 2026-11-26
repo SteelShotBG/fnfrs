@@ -541,6 +541,7 @@ pub(crate) struct AtlasDrawParams {
     pub blend: BlendMode,
     pub is_pixel: bool,
     pub adjust_color: Option<[f32; 4]>,
+    pub wiggle: Option<[f32; 4]>,
     #[allow(dead_code)]
     pub ref_unscaled_size: Option<[f32; 2]>,
 }
@@ -649,6 +650,8 @@ pub(crate) fn draw_atlas_frame(
         .with_flags(flags);
     if let Some([h, s, b, c]) = params.adjust_color {
         inst = inst.with_adjust_color(h, s, b, c);
+    } else if let Some([t, f, sp, amp]) = params.wiggle {
+        inst = inst.with_wiggle(t, f, sp, amp);
     }
 
     batcher.push(texture, params.blend, filter, inst);
@@ -1113,6 +1116,8 @@ pub struct BaseCharacter {
     pub scroll_factor: [f32; 2],
     pub z_index: i32,
     pub alpha: f32,
+    pub visible: bool,
+    pub color: [f32; 4],
     pub angle: f32,
     pub is_pixel: bool,
     pub adjust_color: Option<[f32; 4]>,
@@ -1416,6 +1421,8 @@ impl BaseCharacter {
             scroll_factor: [1.0, 1.0],
             z_index: 0,
             alpha: 1.0,
+            visible: true,
+            color: [1.0, 1.0, 1.0, 1.0],
             angle: 0.0,
             is_pixel: data.is_pixel,
             adjust_color: None,
@@ -1621,6 +1628,7 @@ impl BaseCharacter {
             blend: BlendMode::Normal,
             is_pixel: self.is_pixel,
             adjust_color: self.adjust_color,
+            wiggle: None,
             ref_unscaled_size: Some(self.ref_unscaled_size),
         };
         draw_atlas_frame(
@@ -1958,7 +1966,7 @@ impl BaseCharacter {
 
     /// Zero-allocation character draw into `batcher` using camera scroll & zoom.
     pub fn draw(&self, batcher: &mut SpriteBatcher, cam_pos: [f32; 2], cam_zoom: f32) {
-        if self.alpha <= 0.0 {
+        if !self.visible || self.alpha <= 0.0 {
             return;
         }
         let params = AtlasDrawParams {
@@ -1972,11 +1980,12 @@ impl BaseCharacter {
             angle_deg: self.angle,
             flip_x: self.flip_x,
             flip_y: false,
-            color: [1.0, 1.0, 1.0, 1.0],
+            color: self.color,
             alpha: self.alpha,
             blend: BlendMode::Normal,
             is_pixel: self.is_pixel,
             adjust_color: self.adjust_color,
+            wiggle: None,
             ref_unscaled_size: Some(self.ref_unscaled_size),
         };
         self.bank.draw_current(batcher, &params);

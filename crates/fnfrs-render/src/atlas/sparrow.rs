@@ -21,7 +21,15 @@ pub struct SparrowAtlas {
 impl SparrowAtlas {
     /// Parses a SparrowV2 XML document string into a [`SparrowAtlas`].
     pub fn from_xml(xml: &str) -> Result<Self, AtlasError> {
-        let doc = Document::parse(xml)?;
+        let sanitized;
+        let doc = match Document::parse(xml) {
+            Ok(d) => d,
+            Err(_) if xml.contains('&') => {
+                sanitized = sanitize_bare_ampersands(xml);
+                Document::parse(&sanitized)?
+            }
+            Err(e) => return Err(e.into()),
+        };
         let root = doc.root_element();
         if !root.has_tag_name("TextureAtlas") {
             return Err(AtlasError::InvalidFormat(format!(
@@ -158,6 +166,35 @@ fn parse_subtexture(node: Node<'_, '_>) -> Result<AtlasFrame, AtlasError> {
         flip_x,
         flip_y,
     })
+}
+
+fn sanitize_bare_ampersands(xml: &str) -> String {
+    let mut out = String::with_capacity(xml.len() + 16);
+    let bytes = xml.as_bytes();
+    let mut i = 0usize;
+    while i < bytes.len() {
+        if bytes[i] == b'&' {
+            let rest = &xml[i..];
+            if rest.starts_with("&amp;")
+                || rest.starts_with("&lt;")
+                || rest.starts_with("&gt;")
+                || rest.starts_with("&quot;")
+                || rest.starts_with("&apos;")
+                || rest.starts_with("&#")
+            {
+                out.push('&');
+            } else {
+                out.push_str("&amp;");
+            }
+        } else {
+            let ch = xml[i..].chars().next().unwrap_or(' ');
+            out.push(ch);
+            i += ch.len_utf8();
+            continue;
+        }
+        i += 1;
+    }
+    out
 }
 
 fn req_attr<'a>(

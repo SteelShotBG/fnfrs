@@ -225,6 +225,11 @@ pub struct StrumlineVisualStyle {
     pub cover_start_frames: usize,
     pub cover_loop_frames: usize,
     pub cover_end_frames: usize,
+    pub popup_rating_sizes: [[f32; 2]; 4],
+    pub popup_rating_offsets: [[f32; 2]; 4],
+    pub popup_rating_pixel: [bool; 4],
+    pub popup_digit_offsets: [[f32; 2]; 10],
+    pub popup_digit_pixel: [bool; 10],
 }
 
 impl StrumlineVisualStyle {
@@ -249,6 +254,11 @@ impl StrumlineVisualStyle {
             cover_start_frames: 3,
             cover_loop_frames: 4,
             cover_end_frames: 3,
+            popup_rating_sizes: [[260.0, 96.0]; 4],
+            popup_rating_offsets: [[0.0, 0.0]; 4],
+            popup_rating_pixel: [false; 4],
+            popup_digit_offsets: [[0.0, 0.0]; 10],
+            popup_digit_pixel: [false; 10],
         }
     }
 
@@ -366,6 +376,14 @@ impl Strumline {
     #[must_use]
     pub fn width(&self) -> f32 {
         (KEY_COUNT as f32) * NOTE_SPACING * (self.note_spacing_scale * self.scale)
+    }
+
+    /// Horizontally centers the strumline within `1280px` width (e.g. `blazin`).
+    pub fn center_horizontally(&mut self) {
+        self.x = (VIRTUAL_WIDTH - self.width()) * 0.5;
+        for (i, dir) in NoteDirection::ALL.iter().enumerate() {
+            self.receptors[i].x = self.x + self.get_x_pos(*dir);
+        }
     }
 
     /// Render lookahead horizon in milliseconds (`Strumline.get_renderDistanceMs`).

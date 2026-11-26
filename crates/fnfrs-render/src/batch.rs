@@ -35,6 +35,9 @@ pub const SPRITE_FLAG_AFFINE: u32 = 1 << 5;
 /// Flag enabling Flash `AdjustColor` (`hsbc = [hue_rad, sat_mult, bright_add, contrast_mult]`).
 pub const SPRITE_FLAG_ADJUST_COLOR: u32 = 1 << 6;
 
+/// Flag enabling Flixel `WiggleEffect` DREAMY wave (`hsbc = [time, freq, speed, amp]`).
+pub const SPRITE_FLAG_WIGGLE: u32 = 1 << 7;
+
 /// Blend mode used when drawing sprite or mesh batches.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum BlendMode {
@@ -42,6 +45,7 @@ pub enum BlendMode {
     Normal,
     Add,
     Screen,
+    Multiply,
 }
 
 impl BlendMode {
@@ -66,6 +70,18 @@ impl BlendMode {
                 color: wgpu::BlendComponent {
                     src_factor: wgpu::BlendFactor::SrcAlpha,
                     dst_factor: wgpu::BlendFactor::OneMinusSrc,
+                    operation: wgpu::BlendOperation::Add,
+                },
+                alpha: wgpu::BlendComponent {
+                    src_factor: wgpu::BlendFactor::Zero,
+                    dst_factor: wgpu::BlendFactor::One,
+                    operation: wgpu::BlendOperation::Add,
+                },
+            },
+            Self::Multiply => wgpu::BlendState {
+                color: wgpu::BlendComponent {
+                    src_factor: wgpu::BlendFactor::Dst,
+                    dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
                     operation: wgpu::BlendOperation::Add,
                 },
                 alpha: wgpu::BlendComponent {
@@ -212,6 +228,15 @@ impl SpriteInstance {
         }
         self.hsbc = [hue_rad, sat_mult, bright_add, c];
         self.flags |= SPRITE_FLAG_ADJUST_COLOR;
+        self
+    }
+
+    /// Enables Flixel `WiggleEffect` DREAMY wave (`time_s`, `frequency`, `speed`, `amplitude`).
+    #[inline]
+    #[must_use]
+    pub const fn with_wiggle(mut self, time: f32, freq: f32, speed: f32, amp: f32) -> Self {
+        self.hsbc = [time, freq, speed, amp];
+        self.flags = (self.flags & !SPRITE_FLAG_ADJUST_COLOR) | SPRITE_FLAG_WIGGLE;
         self
     }
 
@@ -388,6 +413,7 @@ pub struct SpriteBatcher {
     pipeline_normal: wgpu::RenderPipeline,
     pipeline_add: wgpu::RenderPipeline,
     pipeline_screen: wgpu::RenderPipeline,
+    pipeline_multiply: wgpu::RenderPipeline,
 }
 
 impl SpriteBatcher {
@@ -474,6 +500,14 @@ impl SpriteBatcher {
             BlendMode::Screen,
             "fnfrs-sprite-pipeline-screen",
         );
+        let pipeline_multiply = create_sprite_pipeline(
+            &gpu.device,
+            &pipeline_layout,
+            &shader,
+            format,
+            BlendMode::Multiply,
+            "fnfrs-sprite-pipeline-multiply",
+        );
 
         Self {
             queue,
@@ -484,6 +518,7 @@ impl SpriteBatcher {
             pipeline_normal,
             pipeline_add,
             pipeline_screen,
+            pipeline_multiply,
         }
     }
 
@@ -585,6 +620,7 @@ impl SpriteBatcher {
                     BlendMode::Normal => &self.pipeline_normal,
                     BlendMode::Add => &self.pipeline_add,
                     BlendMode::Screen => &self.pipeline_screen,
+                    BlendMode::Multiply => &self.pipeline_multiply,
                 };
                 render_pass.set_pipeline(pipeline);
                 active_blend = Some(group.blend);

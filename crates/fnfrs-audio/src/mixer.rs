@@ -117,12 +117,15 @@ pub enum AudioCommand {
         slot: usize,
         gain: f32,
     },
+    StartBgLoop(Box<DecodedAudio>),
+    StopBgLoop,
 }
 
 /// Replaced buffers returned to the main thread so the audio callback never deallocates.
 pub enum RetiredResource {
     Song(Box<SongTracks>),
     Sfx(Box<SfxBank>),
+    Audio(Box<DecodedAudio>),
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -150,6 +153,8 @@ pub struct MixerState {
 
     sfx_bank: Option<Box<SfxBank>>,
     sfx_voices: [SfxVoice; MAX_SFX_VOICES],
+    bg_loop: Option<Box<DecodedAudio>>,
+    bg_loop_cursor: usize,
 }
 
 impl MixerState {
@@ -173,6 +178,8 @@ impl MixerState {
             master_gain: 1.0,
             sfx_bank: None,
             sfx_voices: [SfxVoice::default(); MAX_SFX_VOICES],
+            bg_loop: None,
+            bg_loop_cursor: 0,
         }
     }
 
@@ -234,6 +241,18 @@ impl MixerState {
                 AudioCommand::PlaySfx { slot, gain } => {
                     self.trigger_sfx(slot, gain);
                 }
+                AudioCommand::StartBgLoop(audio) => {
+                    self.bg_loop_cursor = 0;
+                    if let Some(old) = self.bg_loop.replace(audio) {
+                        let _ = self.retired_tx.push(RetiredResource::Audio(old));
+                    }
+                }
+                AudioCommand::StopBgLoop => {
+                    self.bg_loop_cursor = 0;
+                    if let Some(old) = self.bg_loop.take() {
+                        let _ = self.retired_tx.push(RetiredResource::Audio(old));
+                    }
+                }
             }
         }
 
@@ -263,6 +282,13 @@ impl MixerState {
                     } else {
                         self.is_playing = false;
                     }
+                }
+            } else if let Some(bg) = &self.bg_loop {
+                if bg.frames > 0 {
+                    let [l, r] = bg.sample_frame(self.bg_loop_cursor);
+                    left += l * 0.55;
+                    right += r * 0.55;
+                    self.bg_loop_cursor = (self.bg_loop_cursor + 1) % bg.frames;
                 }
             }
 
@@ -440,6 +466,16 @@ impl AudioEngine {
     /// Triggers a pre-registered sound effect slot.
     pub fn play_sfx(&mut self, slot: usize, gain: f32) -> Result<(), AudioError> {
         self.send(AudioCommand::PlaySfx { slot, gain })
+    }
+
+    /// Starts an independent looping background audio track (e.g. pause music).
+    pub fn start_bg_loop(&mut self, audio: DecodedAudio) -> Result<(), AudioError> {
+        self.send(AudioCommand::StartBgLoop(Box::new(audio)))
+    }
+
+    /// Stops any active background loop audio track.
+    pub fn stop_bg_loop(&mut self) -> Result<(), AudioError> {
+        self.send(AudioCommand::StopBgLoop)
     }
 }
 

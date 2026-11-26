@@ -23,6 +23,7 @@ const FLAG_PIXEL_SNAP: u32 = 8u;
 const FLAG_ROTATED_90_CCW: u32 = 16u;
 const FLAG_AFFINE: u32 = 32u;
 const FLAG_ADJUST_COLOR: u32 = 64u;
+const FLAG_WIGGLE: u32 = 128u;
 
 struct SpriteInstanceInput {
     @location(0) pos: vec2<f32>,
@@ -153,7 +154,13 @@ fn apply_adjust_color(color: vec3<f32>, hsbc: vec4<f32>) -> vec3<f32> {
 
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
-    let tex_color = textureSample(sprite_tex, sprite_sampler, in.uv);
+    var sample_uv = in.uv;
+    if (in.flags & FLAG_WIGGLE) != 0u {
+        // Flixel WiggleEffect DREAMY mode (`hsbc = [time, freq, speed, amp]`).
+        let wave = sin(sample_uv.y * in.hsbc.y * 6.2831853 + in.hsbc.x * in.hsbc.z) * in.hsbc.w;
+        sample_uv.x = clamp(sample_uv.x + wave, 0.0, 1.0);
+    }
+    let tex_color = textureSample(sprite_tex, sprite_sampler, sample_uv);
     var rgb = tex_color.rgb;
 
     if (in.flags & FLAG_ADJUST_COLOR) != 0u {

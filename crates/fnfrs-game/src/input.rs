@@ -125,6 +125,98 @@ impl Default for KeyBinds {
 }
 
 impl KeyBinds {
+    /// Parses a saved keybind name (e.g. `"A"`, `"S"`, `"W"`, `"D"`, `"J"`) into [`KeyCode`].
+    #[must_use]
+    pub fn key_from_name(name: &str) -> Option<KeyCode> {
+        match name.trim().to_ascii_uppercase().as_str() {
+            "A" => Some(KeyCode::KeyA),
+            "B" => Some(KeyCode::KeyB),
+            "C" => Some(KeyCode::KeyC),
+            "D" => Some(KeyCode::KeyD),
+            "E" => Some(KeyCode::KeyE),
+            "F" => Some(KeyCode::KeyF),
+            "G" => Some(KeyCode::KeyG),
+            "H" => Some(KeyCode::KeyH),
+            "I" => Some(KeyCode::KeyI),
+            "J" => Some(KeyCode::KeyJ),
+            "K" => Some(KeyCode::KeyK),
+            "L" => Some(KeyCode::KeyL),
+            "M" => Some(KeyCode::KeyM),
+            "N" => Some(KeyCode::KeyN),
+            "O" => Some(KeyCode::KeyO),
+            "P" => Some(KeyCode::KeyP),
+            "Q" => Some(KeyCode::KeyQ),
+            "R" => Some(KeyCode::KeyR),
+            "S" => Some(KeyCode::KeyS),
+            "T" => Some(KeyCode::KeyT),
+            "U" => Some(KeyCode::KeyU),
+            "V" => Some(KeyCode::KeyV),
+            "W" => Some(KeyCode::KeyW),
+            "X" => Some(KeyCode::KeyX),
+            "Y" => Some(KeyCode::KeyY),
+            "Z" => Some(KeyCode::KeyZ),
+            "LEFT" => Some(KeyCode::ArrowLeft),
+            "DOWN" => Some(KeyCode::ArrowDown),
+            "UP" => Some(KeyCode::ArrowUp),
+            "RIGHT" => Some(KeyCode::ArrowRight),
+            "SPACE" => Some(KeyCode::Space),
+            _ => None,
+        }
+    }
+
+    /// Converts a [`KeyCode`] to its portable save string.
+    #[must_use]
+    pub const fn key_to_name(code: KeyCode) -> Option<&'static str> {
+        match code {
+            KeyCode::KeyA => Some("A"),
+            KeyCode::KeyB => Some("B"),
+            KeyCode::KeyC => Some("C"),
+            KeyCode::KeyD => Some("D"),
+            KeyCode::KeyE => Some("E"),
+            KeyCode::KeyF => Some("F"),
+            KeyCode::KeyG => Some("G"),
+            KeyCode::KeyH => Some("H"),
+            KeyCode::KeyI => Some("I"),
+            KeyCode::KeyJ => Some("J"),
+            KeyCode::KeyK => Some("K"),
+            KeyCode::KeyL => Some("L"),
+            KeyCode::KeyM => Some("M"),
+            KeyCode::KeyN => Some("N"),
+            KeyCode::KeyO => Some("O"),
+            KeyCode::KeyP => Some("P"),
+            KeyCode::KeyQ => Some("Q"),
+            KeyCode::KeyR => Some("R"),
+            KeyCode::KeyS => Some("S"),
+            KeyCode::KeyT => Some("T"),
+            KeyCode::KeyU => Some("U"),
+            KeyCode::KeyV => Some("V"),
+            KeyCode::KeyW => Some("W"),
+            KeyCode::KeyX => Some("X"),
+            KeyCode::KeyY => Some("Y"),
+            KeyCode::KeyZ => Some("Z"),
+            KeyCode::ArrowLeft => Some("LEFT"),
+            KeyCode::ArrowDown => Some("DOWN"),
+            KeyCode::ArrowUp => Some("UP"),
+            KeyCode::ArrowRight => Some("RIGHT"),
+            KeyCode::Space => Some("SPACE"),
+            KeyCode::Escape => Some("ESCAPE"),
+            _ => None,
+        }
+    }
+
+    /// Builds [`KeyBinds`] keeping Arrow keys as primary + `names` as secondary bindings.
+    #[must_use]
+    pub fn from_names(names: &[String; 4]) -> Self {
+        let def = Self::default();
+        let mut lanes = def.lanes;
+        for i in 0..4 {
+            if let Some(k) = Self::key_from_name(&names[i]) {
+                lanes[i][1] = k;
+            }
+        }
+        Self { lanes }
+    }
+
     /// Resolves a `winit::keyboard::KeyCode` to a gameplay lane, if bound.
     #[inline]
     #[must_use]

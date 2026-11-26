@@ -4,7 +4,7 @@ use std::fs;
 
 use fnfrs_core::constants::{VIRTUAL_HEIGHT, VIRTUAL_WIDTH};
 use fnfrs_core::paths::AssetLocator;
-use fnfrs_core::schema::level::LevelData;
+use fnfrs_core::schema::level::{LevelData, LevelPropData};
 use fnfrs_render::{
     AtlasFrame, BitmapFont, BlendMode, FilterMode, GpuContext, SpriteBatcher, SpriteInstance,
     TextAlign, TextStyle, TextureHandle,
@@ -26,6 +26,9 @@ struct StoryPropSprite {
     tex: Option<(TextureHandle, [f32; 2])>,
     idle_frames: Vec<AtlasFrame>,
     confirm_frames: Vec<AtlasFrame>,
+    dance_left_frames: Vec<AtlasFrame>,
+    dance_right_frames: Vec<AtlasFrame>,
+    has_dance_lr: bool,
     offsets: [f32; 2],
     scale: f32,
     alpha: f32,
@@ -43,6 +46,7 @@ struct StoryWeekEntry {
     tracks_display: String,
     bg_color: [f32; 4],
     title_tex: Option<(TextureHandle, [f32; 2])>,
+    prop_specs: Vec<LevelPropData>,
     props: Vec<StoryPropSprite>,
 }
 
@@ -51,6 +55,7 @@ pub struct StoryMenuScreenState {
     white_tex: TextureHandle,
     weeks: Vec<StoryWeekEntry>,
     selected_week: usize,
+    loaded_props_week: Option<usize>,
     diff_idx: usize,
     scroll_y: f32,
 
@@ -63,8 +68,108 @@ pub struct StoryMenuScreenState {
 
     anim_time_s: f32,
     beat_timer_s: f32,
+    dance_beat_left: bool,
     confirming: bool,
     confirm_timer_s: f32,
+}
+
+fn collect_prop_frames(
+    atlas: &fnfrs_render::SparrowAtlas,
+    prefix: &str,
+    indices: &[usize],
+) -> Vec<AtlasFrame> {
+    let matched: Vec<AtlasFrame> = atlas.frames_by_prefix(prefix).cloned().collect();
+    if indices.is_empty() {
+        return matched;
+    }
+    indices
+        .iter()
+        .filter_map(|&idx| matched.get(idx).cloned())
+        .collect()
+}
+
+fn load_week_props(
+    specs: &[LevelPropData],
+    assets: &AssetLocator,
+    gpu: &mut GpuContext,
+) -> Vec<StoryPropSprite> {
+    let mut props = Vec::with_capacity(specs.len());
+    for prop in specs {
+        let loaded = load_menu_sparrow(assets, gpu, &prop.asset_path);
+        let idle_anim = prop
+            .animations
+            .iter()
+            .find(|a| a.name.eq_ignore_ascii_case("idle"));
+        let confirm_anim = prop
+            .animations
+            .iter()
+            .find(|a| a.name.eq_ignore_ascii_case("confirm"));
+        let dl_anim = prop
+            .animations
+            .iter()
+            .find(|a| a.name.eq_ignore_ascii_case("danceLeft"));
+        let dr_anim = prop
+            .animations
+            .iter()
+            .find(|a| a.name.eq_ignore_ascii_case("danceRight"));
+        let fallback_anim = prop.animations.first();
+
+        let ref_anim = dl_anim.or(idle_anim).or(fallback_anim);
+        let fps = ref_anim.map_or(24.0, |a| a.frame_rate.max(1) as f32);
+
+        let (tex, idle_frames, confirm_frames, dance_left_frames, dance_right_frames, has_dance_lr) =
+            match loaded {
+                Some((t, sz, atlas)) => {
+                    let idle_pfx = idle_anim
+                        .or(fallback_anim)
+                        .and_then(|a| a.prefix.as_deref())
+                        .unwrap_or("idle");
+                    let idle_indices = idle_anim
+                        .or(fallback_anim)
+                        .map_or(&[][..], |a| a.frame_indices.as_slice());
+                    let mut idle_f = collect_prop_frames(&atlas, idle_pfx, idle_indices);
+                    if idle_f.is_empty() {
+                        idle_f = atlas.frames().to_vec();
+                    }
+
+                    let conf_f = confirm_anim
+                        .and_then(|a| a.prefix.as_deref())
+                        .map(|pfx| collect_prop_frames(&atlas, pfx, &confirm_anim.map_or(&[][..], |a| a.frame_indices.as_slice())))
+                        .unwrap_or_default();
+
+                    let dl_f = dl_anim
+                        .map(|a| {
+                            let pfx = a.prefix.as_deref().unwrap_or("idle");
+                            collect_prop_frames(&atlas, pfx, &a.frame_indices)
+                        })
+                        .unwrap_or_default();
+                    let dr_f = dr_anim
+                        .map(|a| {
+                            let pfx = a.prefix.as_deref().unwrap_or("idle");
+                            collect_prop_frames(&atlas, pfx, &a.frame_indices)
+                        })
+                        .unwrap_or_default();
+                    let has_dlr = !dl_f.is_empty() && !dr_f.is_empty();
+                    (Some((t, sz)), idle_f, conf_f, dl_f, dr_f, has_dlr)
+                }
+                None => (None, Vec::new(), Vec::new(), Vec::new(), Vec::new(), false),
+            };
+        props.push(StoryPropSprite {
+            tex,
+            idle_frames,
+            confirm_frames,
+            dance_left_frames,
+            dance_right_frames,
+            has_dance_lr,
+            offsets: prop.offsets,
+            scale: prop.scale,
+            alpha: prop.alpha,
+            is_pixel: prop.is_pixel,
+            flip_x: prop.flip_x,
+            fps,
+        });
+    }
+    props
 }
 
 impl StoryMenuScreenState {
@@ -99,46 +204,6 @@ impl StoryMenuScreenState {
                 continue;
             }
             let title_tex = load_menu_image(assets, gpu, &data.title_asset);
-            let mut props = Vec::with_capacity(data.props.len());
-            for prop in &data.props {
-                let loaded = load_menu_sparrow(assets, gpu, &prop.asset_path);
-                let idle_anim = prop
-                    .animations
-                    .iter()
-                    .find(|a| a.name.eq_ignore_ascii_case("idle"));
-                let confirm_anim = prop
-                    .animations
-                    .iter()
-                    .find(|a| a.name.eq_ignore_ascii_case("confirm"));
-                let fps = idle_anim.map_or(24.0, |a| a.frame_rate.max(1) as f32);
-                let (tex, idle_frames, confirm_frames) = match loaded {
-                    Some((t, sz, atlas)) => {
-                        let idle_pfx = idle_anim
-                            .and_then(|a| a.prefix.as_deref())
-                            .unwrap_or("idle");
-                        let conf_pfx = confirm_anim
-                            .and_then(|a| a.prefix.as_deref())
-                            .unwrap_or("confirm");
-                        (
-                            Some((t, sz)),
-                            atlas.frames_by_prefix(idle_pfx).cloned().collect(),
-                            atlas.frames_by_prefix(conf_pfx).cloned().collect(),
-                        )
-                    }
-                    None => (None, Vec::new(), Vec::new()),
-                };
-                props.push(StoryPropSprite {
-                    tex,
-                    idle_frames,
-                    confirm_frames,
-                    offsets: prop.offsets,
-                    scale: prop.scale,
-                    alpha: prop.alpha,
-                    is_pixel: prop.is_pixel,
-                    flip_x: prop.flip_x,
-                    fps,
-                });
-            }
             let tracks_display = data.songs.join("\n").to_ascii_uppercase();
             let id_upper = id.to_ascii_uppercase();
             let hdr_label = format!("WEEK: {id_upper}");
@@ -150,9 +215,17 @@ impl StoryMenuScreenState {
                 tracks_display,
                 bg_color: parse_stage_color(&data.background),
                 title_tex,
-                props,
+                prop_specs: data.props,
+                props: Vec::new(),
             });
         }
+
+        let loaded_props_week = if let Some(first) = weeks.first_mut() {
+            first.props = load_week_props(&first.prop_specs, assets, gpu);
+            Some(0)
+        } else {
+            None
+        };
 
         let arrows_loaded = load_menu_sparrow(assets, gpu, "storymenu/ui/arrows");
         let (arrows_tex, left_idle, left_press, right_idle, right_press) = match arrows_loaded {
@@ -176,6 +249,7 @@ impl StoryMenuScreenState {
             white_tex: gpu.white_texture(),
             weeks,
             selected_week: 0,
+            loaded_props_week,
             diff_idx: 1,
             scroll_y: 0.0,
             arrows_tex,
@@ -186,8 +260,30 @@ impl StoryMenuScreenState {
             diff_textures,
             anim_time_s: 0.0,
             beat_timer_s: 0.0,
+            dance_beat_left: true,
             confirming: false,
             confirm_timer_s: 0.0,
+        }
+    }
+
+    /// Ensures only the currently selected week has its heavy prop textures uploaded on GPU.
+    pub fn sync_active_week(&mut self, assets: &AssetLocator, gpu: &mut GpuContext) {
+        if self.loaded_props_week == Some(self.selected_week) {
+            return;
+        }
+        if let Some(prev_idx) = self.loaded_props_week {
+            if let Some(prev) = self.weeks.get_mut(prev_idx) {
+                for prop in &mut prev.props {
+                    if let Some((tex, _)) = prop.tex.take() {
+                        gpu.unload_texture(tex);
+                    }
+                }
+                prev.props.clear();
+            }
+        }
+        if let Some(curr) = self.weeks.get_mut(self.selected_week) {
+            curr.props = load_week_props(&curr.prop_specs, assets, gpu);
+            self.loaded_props_week = Some(self.selected_week);
         }
     }
 
@@ -197,6 +293,14 @@ impl StoryMenuScreenState {
         self.scroll_y = self.selected_week as f32 * 120.0;
     }
 
+    /// Returns the active week level ID (e.g. `"WEEK1"`), if any.
+    #[must_use]
+    pub fn selected_week_id(&self) -> Option<&str> {
+        self.weeks
+            .get(self.selected_week)
+            .map(|w| w.id_upper.as_str())
+    }
+
     pub fn update(&mut self, elapsed_s: f32, input: MenuInputState) -> MenuCommand {
         let dt = elapsed_s.clamp(0.0, 0.1);
         self.anim_time_s += dt;
@@ -204,6 +308,7 @@ impl StoryMenuScreenState {
         let beat_dur = 60.0 / INTRO_BPM;
         if self.beat_timer_s >= beat_dur {
             self.beat_timer_s -= beat_dur;
+            self.dance_beat_left = !self.dance_beat_left;
         }
 
         let target_scroll = self.selected_week as f32 * 120.0;
@@ -294,28 +399,34 @@ impl StoryMenuScreenState {
             SpriteInstance::new([0.0, 56.0], [VIRTUAL_WIDTH, 400.0]).with_color(active_week.bg_color),
         );
 
-        // Week props inside banner (`storymenu/props/*`).
-        let prop_count = active_week.props.len().max(1);
+        // Week props inside banner (`storymenu/props/*`) placed at `x = 320 * idx + offsets[0], y = 56 + offsets[1]`.
         for (idx, prop) in active_week.props.iter().enumerate() {
             let Some((tex, sz)) = prop.tex else {
                 continue;
             };
             let frames = if self.confirming && !prop.confirm_frames.is_empty() {
                 &prop.confirm_frames
+            } else if prop.has_dance_lr {
+                if self.dance_beat_left {
+                    &prop.dance_left_frames
+                } else {
+                    &prop.dance_right_frames
+                }
             } else {
                 &prop.idle_frames
             };
             if frames.is_empty() {
                 continue;
             }
-            let f_idx = ((self.anim_time_s * prop.fps).floor() as usize) % frames.len();
+            let f_idx = if prop.has_dance_lr && !(self.confirming && !prop.confirm_frames.is_empty())
+            {
+                ((self.beat_timer_s * prop.fps).floor() as usize).min(frames.len() - 1)
+            } else {
+                ((self.anim_time_s * prop.fps).floor() as usize) % frames.len()
+            };
             if let Some(frame) = frames.get(f_idx) {
-                let src = frame.source_size();
-                let spacing = 360.0;
-                let group_origin_x = VIRTUAL_WIDTH * 0.5 - ((prop_count - 1) as f32) * spacing * 0.5;
-                let center_x = group_origin_x + (idx as f32) * spacing + prop.offsets[0] * 0.35;
-                let pos_x = center_x - src[0] * prop.scale * 0.5;
-                let pos_y = 56.0 + (400.0 - src[1] * prop.scale) * 0.5 + prop.offsets[1] * 0.25;
+                let pos_x = (VIRTUAL_WIDTH * 0.25) * (idx as f32) + prop.offsets[0];
+                let pos_y = 56.0 + prop.offsets[1];
                 draw_menu_sparrow_frame(
                     batcher,
                     tex,

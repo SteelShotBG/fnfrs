@@ -5,13 +5,13 @@ use std::fmt::Write as _;
 use fnfrs_core::constants::{VIRTUAL_HEIGHT, VIRTUAL_WIDTH};
 use fnfrs_core::paths::AssetLocator;
 use fnfrs_render::{
-    AtlasFrame, BitmapFont, BlendMode, FilterMode, GpuContext, SpriteBatcher, SpriteInstance,
-    StackTextBuffer, TextAlign, TextStyle, TextureHandle,
+    AtlasFont, AtlasFrame, AtlasTextStyle, BitmapFont, BlendMode, FilterMode, GpuContext,
+    SpriteBatcher, SpriteInstance, StackTextBuffer, TextAlign, TextStyle, TextureHandle,
 };
 
 use super::{
-    discover_freeplay_songs, draw_menu_sparrow_frame, load_menu_image, load_menu_sparrow,
-    FreeplaySongEntry, MenuCommand, MenuInputState,
+    discover_freeplay_songs, draw_menu_sparrow_frame, load_menu_atlas_font, load_menu_image,
+    load_menu_sparrow, FreeplaySongEntry, MenuCommand, MenuInputState,
 };
 
 const ALL_DIFF_LABELS: [&str; 5] = ["easy", "normal", "hard", "erect", "nightmare"];
@@ -48,6 +48,14 @@ pub struct FreeplayScreenState {
     selected_song: usize,
     diff_idx: usize,
     pico_variation: bool,
+    atlas_font: AtlasFont,
+    playable_char: String,
+    fav_icon: Option<(TextureHandle, [f32; 2])>,
+    pub char_select_requested: bool,
+    pub favorite_toggle_requested: Option<String>,
+    pub active_song_highscore: i64,
+    pub active_song_rank: String,
+    pub active_song_favorited: bool,
 
     scroll_y: f32,
     anim_time_s: f32,
@@ -100,6 +108,8 @@ impl FreeplayScreenState {
             ),
             None => (None, None, None),
         };
+        let atlas_font = load_menu_atlas_font(assets, gpu, true);
+        let fav_icon = load_menu_image(assets, gpu, "freeplay/favHeart");
 
         Self {
             white_tex: gpu.white_texture(),
@@ -116,12 +126,54 @@ impl FreeplayScreenState {
             selected_song: 0,
             diff_idx: 1,
             pico_variation: false,
+            atlas_font,
+            playable_char: "bf".to_owned(),
+            fav_icon,
+            char_select_requested: false,
+            favorite_toggle_requested: None,
+            active_song_highscore: 0,
+            active_song_rank: String::new(),
+            active_song_favorited: false,
             scroll_y: 0.0,
             anim_time_s: 0.0,
             preview_pending: true,
             preview_delay_s: 0.25,
             confirming: false,
             confirm_timer_s: 0.0,
+        }
+    }
+
+    /// Syncs selected playable character (`"bf"` / `"pico"`), saved highscore, and favorite state.
+    pub fn sync_from_save(
+        &mut self,
+        assets: &AssetLocator,
+        gpu: &mut GpuContext,
+        save: &fnfrs_core::save::SaveData,
+    ) {
+        if !self.playable_char.eq_ignore_ascii_case(&save.playable_character) {
+            self.playable_char = save.playable_character.clone();
+            self.pico_variation = self.playable_char.eq_ignore_ascii_case("pico");
+            let bg_key = if self.pico_variation {
+                "freeplay/freeplayBGweek1-pico"
+            } else {
+                "freeplay/freeplayBGweek1-bf"
+            };
+            if let Some(new_bg) = load_menu_image(assets, gpu, bg_key) {
+                self.bg_tex = Some(new_bg);
+            }
+            self.snap_difficulty_to_available(0);
+        }
+        if let Some(song) = self.songs.get(self.selected_song) {
+            let var = self.effective_variation(song);
+            let diff = ALL_DIFF_LABELS[self.diff_idx];
+            if let Some(rec) = save.get_song_score(&song.song_id, var.as_deref(), diff) {
+                self.active_song_highscore = rec.score;
+                self.active_song_rank = rec.rank.clone();
+            } else {
+                self.active_song_highscore = 0;
+                self.active_song_rank.clear();
+            }
+            self.active_song_favorited = save.is_favorite(&song.song_id);
         }
     }
 
@@ -265,6 +317,20 @@ impl FreeplayScreenState {
             }
         }
 
+        if input.fav_pressed && !self.songs.is_empty() {
+            let song = &self.songs[self.selected_song];
+            let variation = self
+                .effective_variation(song)
+                .unwrap_or_else(|| "default".to_owned());
+            self.favorite_toggle_requested = Some((song.song_id.clone(), variation));
+            return MenuCommand::PlaySfx("scrollMenu");
+        }
+
+        if input.char_select_pressed {
+            self.char_select_requested = true;
+            return MenuCommand::PlaySfx("confirmMenu");
+        }
+
         if input.accept_pressed && !self.songs.is_empty() {
             self.confirming = true;
             self.confirm_timer_s = 0.0;
@@ -327,19 +393,35 @@ impl FreeplayScreenState {
                 .with_color([0.0, 0.0, 0.0, 0.85]),
         );
 
-        font.draw_str(
-            batcher,
-            font_tex,
-            "FREEPLAY",
-            28.0,
-            16.0,
-            &TextStyle {
-                scale: 1.0,
-                color: [1.0, 1.0, 1.0, 1.0],
-                align: TextAlign::Left,
-                ..Default::default()
-            },
-        );
+        if self.atlas_font.is_loaded() {
+            self.atlas_font.draw_str(
+                batcher,
+                "FREEPLAY",
+                [28.0, 12.0],
+                &AtlasTextStyle {
+                    scale: 0.62,
+                    color: [1.0, 1.0, 1.0, 1.0],
+                    align: TextAlign::Left,
+                    time_s: self.anim_time_s,
+                    animated: true,
+                    ..Default::default()
+                },
+            );
+        } else {
+            font.draw_str(
+                batcher,
+                font_tex,
+                "FREEPLAY",
+                28.0,
+                16.0,
+                &TextStyle {
+                    scale: 1.0,
+                    color: [1.0, 1.0, 1.0, 1.0],
+                    align: TextAlign::Left,
+                    ..Default::default()
+                },
+            );
+        }
 
         if self.songs.is_empty() {
             font.draw_str(
@@ -404,19 +486,35 @@ impl FreeplayScreenState {
                 );
             }
 
-            font.draw_str(
-                batcher,
-                font_tex,
-                &song.song_name,
-                x + 92.0,
-                y + 38.0,
-                &TextStyle {
-                    scale: if is_sel { 1.0 } else { 0.88 },
-                    color: [1.0, 1.0, 1.0, alpha],
-                    align: TextAlign::Left,
-                    ..Default::default()
-                },
-            );
+            if self.atlas_font.is_loaded() {
+                self.atlas_font.draw_str(
+                    batcher,
+                    &song.song_name,
+                    [x + 86.0, y + 26.0],
+                    &AtlasTextStyle {
+                        scale: if is_sel { 0.56 } else { 0.48 },
+                        color: [1.0, 1.0, 1.0, alpha],
+                        align: TextAlign::Left,
+                        time_s: self.anim_time_s,
+                        animated: is_sel,
+                        ..Default::default()
+                    },
+                );
+            } else {
+                font.draw_str(
+                    batcher,
+                    font_tex,
+                    &song.song_name,
+                    x + 92.0,
+                    y + 38.0,
+                    &TextStyle {
+                        scale: if is_sel { 1.0 } else { 0.88 },
+                        color: [1.0, 1.0, 1.0, alpha],
+                        align: TextAlign::Left,
+                        ..Default::default()
+                    },
+                );
+            }
         }
 
         // Left side difficulty badge & info card (`x = 70..390`).
@@ -533,6 +631,43 @@ impl FreeplayScreenState {
             &TextStyle {
                 scale: 0.72,
                 color: [0.75, 0.95, 1.0, 1.0],
+                align: TextAlign::Left,
+                ..Default::default()
+            },
+        );
+        line_buf.clear();
+        let _ = write!(line_buf, "High Score: {}", self.active_song_highscore);
+        font.draw_bytes(
+            batcher,
+            font_tex,
+            line_buf.as_bytes(),
+            60.0,
+            406.0,
+            &TextStyle {
+                scale: 0.72,
+                color: [1.0, 0.92, 0.35, 1.0],
+                align: TextAlign::Left,
+                ..Default::default()
+            },
+        );
+        let fav_str = if self.active_song_favorited {
+            "[F] Favorited (*)"
+        } else {
+            "[F] Favorite  |  [C] Char Select"
+        };
+        font.draw_str(
+            batcher,
+            font_tex,
+            fav_str,
+            60.0,
+            446.0,
+            &TextStyle {
+                scale: 0.65,
+                color: if self.active_song_favorited {
+                    [1.0, 0.45, 0.65, 1.0]
+                } else {
+                    [0.85, 0.85, 0.92, 0.9]
+                },
                 align: TextAlign::Left,
                 ..Default::default()
             },

@@ -1,8 +1,10 @@
 //! V-Slice menu states (`Title`, `MainMenu`, `StoryMenu`, `Freeplay`) with
 //! zero per-frame heap allocations inside `update` / `draw`.
 
+pub mod char_select;
 pub mod freeplay;
 pub mod main_menu;
+pub mod options;
 pub mod story_menu;
 pub mod title;
 
@@ -12,12 +14,15 @@ use std::path::Path;
 use fnfrs_core::paths::AssetLocator;
 use fnfrs_core::schema::song::SongMetadata;
 use fnfrs_render::{
-    AtlasFrame, BlendMode, FilterMode, GpuContext, SparrowAtlas, SpriteBatcher, SpriteInstance,
-    TextureHandle, SPRITE_FLAG_FLIP_X, SPRITE_FLAG_FLIP_Y, SPRITE_FLAG_ROTATED_90_CCW,
+    AtlasFont, AtlasFrame, BlendMode, FilterMode, GpuContext, SparrowAtlas, SpriteBatcher,
+    SpriteInstance, TextureHandle, SPRITE_FLAG_FLIP_X, SPRITE_FLAG_FLIP_Y,
+    SPRITE_FLAG_ROTATED_90_CCW,
 };
 
+pub use char_select::CharSelectScreenState;
 pub use freeplay::FreeplayScreenState;
 pub use main_menu::{MainMenuChoice, MainMenuScreenState};
+pub use options::OptionsScreenState;
 pub use story_menu::StoryMenuScreenState;
 pub use title::TitleScreenState;
 
@@ -30,6 +35,9 @@ pub enum MenuCommand {
     EnterTitle,
     EnterStoryMenu,
     EnterFreeplay,
+    EnterOptions,
+    EnterCharSelect,
+    SavePreferencesChanged,
     StartFreeplaySong {
         song_id: String,
         difficulty: String,
@@ -59,6 +67,8 @@ pub struct MenuInputState {
     pub accept_pressed: bool,
     pub back_pressed: bool,
     pub tab_pressed: bool,
+    pub fav_pressed: bool,
+    pub char_select_pressed: bool,
     pub shift_held: bool,
 }
 
@@ -98,6 +108,23 @@ pub(crate) fn load_menu_sparrow(
     let xml = fs::read_to_string(assets.sparrow_xml(key)).ok()?;
     let atlas = SparrowAtlas::from_xml(&xml).ok()?;
     Some((tex, sz, atlas))
+}
+
+/// Loads `images/fonts/bold` + `images/fonts/default` as a pre-indexed `AtlasFont`.
+pub(crate) fn load_menu_atlas_font(
+    assets: &AssetLocator,
+    gpu: &mut GpuContext,
+    prefer_bold: bool,
+) -> AtlasFont {
+    let bold_loaded = load_menu_sparrow(assets, gpu, "fonts/bold");
+    let def_loaded = load_menu_sparrow(assets, gpu, "fonts/default");
+    let bold_ref = bold_loaded
+        .as_ref()
+        .map(|(tex, sz, atlas)| (*tex, *sz, atlas));
+    let def_ref = def_loaded
+        .as_ref()
+        .map(|(tex, sz, atlas)| (*tex, *sz, atlas));
+    AtlasFont::from_sparrows(bold_ref, def_ref, prefer_bold)
 }
 
 /// Draws a single Sparrow frame in screen coordinates (top-left of untrimmed frame box).

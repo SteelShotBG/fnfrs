@@ -63,8 +63,8 @@ impl MainMenuScreenState {
             (MainMenuChoice::Credits, "credits", "mainmenu/credits", "credits idle", "credits selected"),
         ];
 
-        let spacing = 152.0;
-        let top = (VIRTUAL_HEIGHT - spacing * ((specs.len() - 1) as f32)) * 0.5;
+        let spacing = 140.0;
+        let top = 128.0;
 
         let mut items = Vec::with_capacity(specs.len());
         for (idx, (choice, label, key, idle_pfx, sel_pfx)) in specs.into_iter().enumerate() {
@@ -173,10 +173,7 @@ impl MainMenuScreenState {
                 return match choice {
                     MainMenuChoice::StoryMode => MenuCommand::EnterStoryMenu,
                     MainMenuChoice::Freeplay => MenuCommand::EnterFreeplay,
-                    MainMenuChoice::Options => {
-                        self.show_options = true;
-                        MenuCommand::None
-                    }
+                    MainMenuChoice::Options => MenuCommand::EnterOptions,
                     MainMenuChoice::Credits => {
                         self.show_credits = true;
                         MenuCommand::None
@@ -218,9 +215,13 @@ impl MainMenuScreenState {
             self.bg_tex
         };
         if let Some((tex, sz)) = bg {
-            let draw_w = VIRTUAL_WIDTH * 1.2;
+            let draw_w = VIRTUAL_WIDTH * 1.1;
             let draw_h = sz[1] * (draw_w / sz[0].max(1.0));
-            let y_shift = (self.cam_y - VIRTUAL_HEIGHT * 0.5) * 0.17;
+            let y_shift = if self.items.len() > 4 {
+                (self.cam_y - VIRTUAL_HEIGHT * 0.5) * 0.2
+            } else {
+                (self.cam_y - VIRTUAL_HEIGHT * 0.5) * 0.1
+            };
             batcher.push(
                 tex,
                 BlendMode::Normal,
@@ -232,7 +233,11 @@ impl MainMenuScreenState {
             );
         }
 
-        let item_scroll_y = (self.cam_y - VIRTUAL_HEIGHT * 0.5) * 0.4;
+        let item_scroll_y = if self.items.len() > 4 {
+            (self.cam_y - VIRTUAL_HEIGHT * 0.5) * 0.45
+        } else {
+            0.0
+        };
         for (idx, item) in self.items.iter().enumerate() {
             let is_sel = idx == self.selected;
             if self.confirming && !is_sel {

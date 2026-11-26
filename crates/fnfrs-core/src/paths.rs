@@ -142,10 +142,31 @@ impl AssetLocator {
         self.resolve_key("sounds", key, Some("ogg"))
     }
 
-    /// Resolves a music `.ogg` path (`music/<key>.ogg`).
+    /// Resolves a music `.ogg` path (`music/<key>.ogg` or nested `music/<key>/<leaf>.ogg`).
     #[must_use]
     pub fn music(&self, key: &str) -> PathBuf {
-        self.resolve_key("music", key, Some("ogg"))
+        let flat = self.resolve_key("music", key, Some("ogg"));
+        if flat.exists() {
+            return flat;
+        }
+        let clean = key.trim().trim_start_matches('/');
+        let (lib_opt, bare) = match clean.split_once(':') {
+            Some((lib, rest)) if !lib.is_empty() => (Some(lib), rest.trim_start_matches('/')),
+            _ => (None, clean),
+        };
+        if !bare.is_empty() {
+            let leaf = bare.rsplit('/').next().unwrap_or(bare);
+            let nested_key = if let Some(lib) = lib_opt {
+                format!("{lib}:{bare}/{leaf}")
+            } else {
+                format!("{bare}/{leaf}")
+            };
+            let nested = self.resolve_key("music", &nested_key, Some("ogg"));
+            if nested.exists() {
+                return nested;
+            }
+        }
+        flat
     }
 
     /// Resolves a font file (`fonts/<key>`).
@@ -154,6 +175,27 @@ impl AssetLocator {
         self.root
             .join("fonts")
             .join(key.trim_start_matches(['/', '\\']))
+    }
+
+    /// Resolves a cutscene video file under `videos/` or `videos/videos/`.
+    #[must_use]
+    pub fn video(&self, key: &str) -> PathBuf {
+        let clean = key.trim().trim_start_matches(['/', '\\']);
+        let candidates = [
+            format!("videos/{clean}.mp4"),
+            format!("videos/videos/{clean}.mp4"),
+            format!("videos/{clean}.mkv"),
+            format!("videos/videos/{clean}.mkv"),
+            format!("{clean}.mp4"),
+            format!("videos/{clean}"),
+        ];
+        for rel in candidates {
+            let p = self.root.join(&rel);
+            if p.exists() {
+                return p;
+            }
+        }
+        self.root.join("videos").join("videos").join(format!("{clean}.mp4"))
     }
 
     /// Resolves a JSON data file (`data/<key>.json`).

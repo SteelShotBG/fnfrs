@@ -6,9 +6,9 @@ use std::fs;
 use fnfrs_core::constants::{VIRTUAL_HEIGHT, VIRTUAL_WIDTH};
 use fnfrs_core::paths::AssetLocator;
 use fnfrs_render::{
-    AnimateAtlas, AtlasFrame, BitmapFont, BlendMode, EvaluatedPart, FilterMode, GpuContext,
-    SpriteBatcher, SpriteInstance, StackTextBuffer, TextAlign, TextStyle, TextureHandle,
-    SPRITE_FLAG_AFFINE, SPRITE_FLAG_ROTATED_90_CCW,
+    AnimateAtlas, AtlasFont, AtlasFrame, AtlasTextStyle, BitmapFont, BlendMode, EvaluatedPart,
+    FilterMode, GpuContext, SpriteBatcher, SpriteInstance, StackTextBuffer, TextAlign, TextStyle,
+    TextureHandle, SPRITE_FLAG_AFFINE, SPRITE_FLAG_ROTATED_90_CCW,
 };
 
 use super::{draw_menu_sparrow_frame, load_menu_image, load_menu_sparrow, MenuCommand, MenuInputState};
@@ -42,6 +42,7 @@ pub struct TitleScreenState {
 
     ng_tex: Option<(TextureHandle, [f32; 2])>,
     ng_visible: bool,
+    atlas_font: AtlasFont,
 
     intro_lines: [StackTextBuffer<64>; 4],
     intro_line_count: usize,
@@ -97,6 +98,7 @@ impl TitleScreenState {
         let title_text_textures = title_text.textures;
         let title_text_bounds = title_text.bounds;
         let ng_tex = load_menu_image(assets, gpu, "newgrounds_logo");
+        let atlas_font = super::load_menu_atlas_font(assets, gpu, true);
         let wacky = load_random_wacky(assets);
 
         Self {
@@ -117,6 +119,7 @@ impl TitleScreenState {
             title_text_time_s: 0.0,
             ng_tex,
             ng_visible: false,
+            atlas_font,
             intro_lines: std::array::from_fn(|_| StackTextBuffer::new()),
             intro_line_count: 0,
             wacky,
@@ -339,6 +342,16 @@ impl TitleScreenState {
         let hsv = [self.hue_shift, 0.0, 0.0];
 
         if !self.skipped_intro {
+            let line_h = 70.0_f32;
+            let base_y = 200.0 - if self.ng_visible { 40.0 } else { 0.0 };
+            let atlas_style = AtlasTextStyle {
+                scale: 1.0,
+                color: [1.0, 1.0, 1.0, 1.0],
+                align: TextAlign::Center,
+                time_s: self.elapsed_s,
+                animated: true,
+                line_height: line_h,
+            };
             for (idx, line) in self
                 .intro_lines
                 .iter()
@@ -347,19 +360,29 @@ impl TitleScreenState {
             {
                 let text = line.as_str();
                 if !text.is_empty() {
-                    font.draw_str(
-                        batcher,
-                        font_tex,
-                        text,
-                        VIRTUAL_WIDTH * 0.5,
-                        180.0 + (idx as f32) * 64.0,
-                        &TextStyle {
-                            scale: 1.9,
-                            color: [1.0, 1.0, 1.0, 1.0],
-                            align: TextAlign::Center,
-                            ..Default::default()
-                        },
-                    );
+                    let y = base_y + (idx as f32) * line_h;
+                    if self.atlas_font.is_loaded() {
+                        self.atlas_font.draw_bytes(
+                            batcher,
+                            text.as_bytes(),
+                            [VIRTUAL_WIDTH * 0.5, y],
+                            &atlas_style,
+                        );
+                    } else {
+                        font.draw_str(
+                            batcher,
+                            font_tex,
+                            text,
+                            VIRTUAL_WIDTH * 0.5,
+                            y,
+                            &TextStyle {
+                                scale: 1.9,
+                                color: [1.0, 1.0, 1.0, 1.0],
+                                align: TextAlign::Center,
+                                ..Default::default()
+                            },
+                        );
+                    }
                 }
             }
             if self.ng_visible {

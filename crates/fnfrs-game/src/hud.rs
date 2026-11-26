@@ -19,9 +19,10 @@ use fnfrs_core::scoring::{
     calculate_rank, tally_completion, ScoreTallies, ScoringRank,
 };
 use fnfrs_render::{
-    AtlasFrame, BitmapFont, BlendMode, FilterMode, GpuContext, SparrowAtlas, SpriteBatcher,
-    SpriteInstance, StackTextBuffer, TextAlign, TextStyle, TextureHandle, SPRITE_FLAG_FLIP_X,
-    SPRITE_FLAG_FLIP_Y, SPRITE_FLAG_PIXEL_SNAP, SPRITE_FLAG_ROTATED_90_CCW,
+    AnimateAtlas, AtlasFrame, BitmapFont, BlendMode, EvaluatedPart, FilterMode, GpuContext,
+    SparrowAtlas, SpriteBatcher, SpriteInstance, StackTextBuffer, TextAlign, TextStyle,
+    TextureHandle, SPRITE_FLAG_AFFINE, SPRITE_FLAG_FLIP_X, SPRITE_FLAG_FLIP_Y,
+    SPRITE_FLAG_PIXEL_SNAP, SPRITE_FLAG_ROTATED_90_CCW,
 };
 use winit::keyboard::KeyCode;
 
@@ -747,6 +748,7 @@ pub enum PauseMenuOption {
     Resume,
     RestartSong,
     ChangeDifficulty,
+    TogglePractice,
     ToggleBotplay,
     ToggleDownscroll,
     Exit,
@@ -760,6 +762,7 @@ impl PauseMenuOption {
             Self::Resume => "Resume",
             Self::RestartSong => "Restart Song",
             Self::ChangeDifficulty => "Change Difficulty",
+            Self::TogglePractice => "Toggle Practice Mode",
             Self::ToggleBotplay => "Toggle Botplay",
             Self::ToggleDownscroll => "Toggle Downscroll",
             Self::Exit => "Exit",
@@ -822,6 +825,7 @@ pub enum PauseMenuAction {
     Resume,
     RestartSong,
     ChangeDifficulty(usize),
+    TogglePractice,
     ToggleBotplay,
     ToggleDownscroll,
     Exit,
@@ -837,6 +841,7 @@ pub struct PauseMenuState {
     pub selected: usize,
     pub bg_alpha: f32,
     pub metadata_alpha: f32,
+    pub is_practice: bool,
     pub is_botplay: bool,
     pub is_downscroll: bool,
     pub death_count: u32,
@@ -856,10 +861,11 @@ impl Default for PauseMenuState {
 }
 
 impl PauseMenuState {
-    const MAIN_OPTIONS: [PauseMenuOption; 6] = [
+    const MAIN_OPTIONS: [PauseMenuOption; 7] = [
         PauseMenuOption::Resume,
         PauseMenuOption::RestartSong,
         PauseMenuOption::ChangeDifficulty,
+        PauseMenuOption::TogglePractice,
         PauseMenuOption::ToggleBotplay,
         PauseMenuOption::ToggleDownscroll,
         PauseMenuOption::Exit,
@@ -874,6 +880,7 @@ impl PauseMenuState {
             selected: 0,
             bg_alpha: 0.0,
             metadata_alpha: 0.0,
+            is_practice: false,
             is_botplay: false,
             is_downscroll: false,
             death_count: 0,
@@ -1045,6 +1052,10 @@ impl PauseMenuState {
                         self.snap_item_positions();
                         PauseMenuAction::None
                     }
+                    PauseMenuOption::TogglePractice => {
+                        self.is_practice = !self.is_practice;
+                        PauseMenuAction::TogglePractice
+                    }
                     PauseMenuOption::ToggleBotplay => {
                         self.is_botplay = !self.is_botplay;
                         PauseMenuAction::ToggleBotplay
@@ -1130,6 +1141,10 @@ impl PauseMenuState {
                 PauseMenuMode::Main => {
                     let opt = Self::MAIN_OPTIONS[i];
                     match opt {
+                        PauseMenuOption::TogglePractice => {
+                            let state_str = if self.is_practice { "ON" } else { "OFF" };
+                            let _ = write!(line_buf, "Practice Mode: {state_str}");
+                        }
                         PauseMenuOption::ToggleBotplay => {
                             let state_str = if self.is_botplay { "ON" } else { "OFF" };
                             let _ = write!(line_buf, "Botplay: {state_str}");
@@ -1430,62 +1445,21 @@ impl GameOverState {
             return;
         }
 
-        // Solid/dimmed dark backdrop (`GameOverSubState.create`).
-        batcher.push(
-            white_tex,
-            BlendMode::Normal,
-            FilterMode::Nearest,
-            SpriteInstance::new([0.0, 0.0], [VIRTUAL_WIDTH, VIRTUAL_HEIGHT])
-                .with_color([0.0, 0.0, 0.0, 0.92]),
-        );
-
-        let is_small = font.line_height() <= 10.0;
-        let title_scale = if is_small { 6.0 } else { 3.0 };
-        let sub_scale = if is_small { 2.5 } else { 1.35 };
-
-        font.draw_bytes_outlined(
-            batcher,
-            font_tex,
-            b"GAME OVER",
-            [VIRTUAL_WIDTH * 0.5, VIRTUAL_HEIGHT * 0.32],
-            &TextStyle {
-                scale: title_scale,
-                color: [0.95, 0.22, 0.28, 1.0],
-                align: TextAlign::Center,
-                ..Default::default()
-            },
-            [0.0, 0.0, 0.0, 1.0],
-        );
-
-        let mut buf = StackTextBuffer::<64>::new();
-        let _ = write!(buf, "Blue Balls: {}", self.death_count);
-        font.draw_bytes_outlined(
-            batcher,
-            font_tex,
-            buf.as_bytes(),
-            [VIRTUAL_WIDTH * 0.5, VIRTUAL_HEIGHT * 0.48],
-            &TextStyle {
-                scale: sub_scale,
-                color: [0.85, 0.88, 1.0, 1.0],
-                align: TextAlign::Center,
-                ..Default::default()
-            },
-            [0.0, 0.0, 0.0, 1.0],
-        );
-
         if self.can_input && self.phase != GameOverPhase::ConfirmRetry {
+            let is_small = font.line_height() <= 10.0;
+            let sub_scale = if is_small { 2.0 } else { 1.05 };
             font.draw_bytes_outlined(
                 batcher,
                 font_tex,
                 b"ENTER: Retry Song   |   ESC: Exit",
-                [VIRTUAL_WIDTH * 0.5, VIRTUAL_HEIGHT * 0.62],
+                [VIRTUAL_WIDTH * 0.5, VIRTUAL_HEIGHT - 44.0],
                 &TextStyle {
                     scale: sub_scale,
-                    color: [1.0, 1.0, 1.0, 1.0],
+                    color: [1.0, 1.0, 1.0, 0.85],
                     align: TextAlign::Center,
                     ..Default::default()
                 },
-                [0.0, 0.0, 0.0, 1.0],
+                [0.0, 0.0, 0.0, 0.85],
             );
         }
 
@@ -1623,6 +1597,7 @@ impl ResultsSummaryState {
             accuracy_percent: 0.0,
             is_new_highscore: false,
             elapsed_s: 0.0,
+            visuals: None,
         }
     }
 
@@ -1649,9 +1624,21 @@ impl ResultsSummaryState {
         self.elapsed_s = 0.0;
     }
 
-    /// Hides the results summary screen.
+    /// Loads visual assets for the current result rank/character (`ResultsVisuals`).
+    pub fn load_visuals(&mut self, assets: &AssetLocator, gpu: &mut GpuContext, is_pico: bool) {
+        self.visuals = Some(Box::new(ResultsVisuals::load(
+            assets,
+            gpu,
+            self.difficulty.as_str(),
+            self.rank,
+            is_pico,
+        )));
+    }
+
+    /// Hides the results summary screen and releases visual textures.
     pub fn hide(&mut self) {
         self.is_active = false;
+        self.visuals = None;
     }
 
     /// Advances display timer and checks confirm/back input with zero heap allocations.
@@ -1665,8 +1652,15 @@ impl ResultsSummaryState {
             return ResultsAction::None;
         }
         self.elapsed_s += elapsed_s.max(0.0);
+        if let Some(vis) = &mut self.visuals {
+            if let Some(atlas) = &vis.char_atlas {
+                let total = atlas.total_frames().max(1);
+                let frame = ((self.elapsed_s * atlas.frame_rate()).floor() as u32) % total;
+                atlas.evaluate_frame(frame, &mut vis.char_parts);
+            }
+        }
         if self.elapsed_s >= 0.4 && (accept_pressed || back_pressed) {
-            self.is_active = false;
+            self.hide();
             return ResultsAction::Continue;
         }
         ResultsAction::None
@@ -1693,22 +1687,93 @@ impl ResultsSummaryState {
                 .with_color([0.996, 0.780, 0.361, 1.0]),
         );
 
-        // Top black header bar (`ResultState.blackTopBar`).
-        batcher.push(
-            white_tex,
-            BlendMode::Normal,
-            FilterMode::Nearest,
-            SpriteInstance::new([0.0, 0.0], [VIRTUAL_WIDTH, 136.0])
-                .with_color([0.05, 0.05, 0.07, 0.96]),
-        );
+        if let Some(vis) = &self.visuals {
+            if !vis.char_parts.is_empty() {
+                let (b_orig, _) = vis.char_bounds;
+                let base_x = 580.0 - b_orig[0];
+                let base_y = 140.0 - b_orig[1];
+                for part in &vis.char_parts {
+                    let Some(&(tex, _)) = vis.char_textures.get(part.spritemap_index) else {
+                        continue;
+                    };
+                    let (w, h) = if part.rotated {
+                        (part.size[1], part.size[0])
+                    } else {
+                        (part.size[0], part.size[1])
+                    };
+                    let m = part.transform;
+                    let flags = SPRITE_FLAG_AFFINE
+                        | if part.rotated {
+                            SPRITE_FLAG_ROTATED_90_CCW
+                        } else {
+                            0
+                        };
+                    let inst = SpriteInstance::new(
+                        [base_x + m.translation.x, base_y + m.translation.y],
+                        [m.matrix2.x_axis.x * w, m.matrix2.x_axis.y * w],
+                    )
+                    .with_origin([m.matrix2.y_axis.x * h, m.matrix2.y_axis.y * h])
+                    .with_uv_rect([
+                        part.uv_rect[0],
+                        part.uv_rect[1],
+                        part.uv_rect[0] + part.uv_rect[2],
+                        part.uv_rect[1] + part.uv_rect[3],
+                    ])
+                    .with_color(part.color)
+                    .with_flags(flags);
+                    batcher.push(tex, BlendMode::Normal, FilterMode::Linear, inst);
+                }
+            }
+            if let Some((bar_t, _)) = vis.top_bar_tex {
+                batcher.push(
+                    bar_t,
+                    BlendMode::Normal,
+                    FilterMode::Linear,
+                    SpriteInstance::new([0.0, 0.0], [VIRTUAL_WIDTH, 136.0]),
+                );
+            } else {
+                batcher.push(
+                    white_tex,
+                    BlendMode::Normal,
+                    FilterMode::Nearest,
+                    SpriteInstance::new([0.0, 0.0], [VIRTUAL_WIDTH, 136.0])
+                        .with_color([0.05, 0.05, 0.07, 0.96]),
+                );
+            }
+            if let Some((dt, dsz)) = vis.diff_tex {
+                batcher.push(
+                    dt,
+                    BlendMode::Normal,
+                    FilterMode::Linear,
+                    SpriteInstance::new([56.0, 148.0], dsz),
+                );
+            }
+            if let Some((rt, rsz)) = vis.rank_tex {
+                batcher.push(
+                    rt,
+                    BlendMode::Normal,
+                    FilterMode::Linear,
+                    SpriteInstance::new([VIRTUAL_WIDTH - rsz[0] - 42.0, 18.0], rsz),
+                );
+            }
+        } else {
+            // Top black header bar (`ResultState.blackTopBar`).
+            batcher.push(
+                white_tex,
+                BlendMode::Normal,
+                FilterMode::Nearest,
+                SpriteInstance::new([0.0, 0.0], [VIRTUAL_WIDTH, 136.0])
+                    .with_color([0.05, 0.05, 0.07, 0.96]),
+            );
+        }
 
         // Semi-transparent tally card.
         batcher.push(
             white_tex,
             BlendMode::Normal,
             FilterMode::Nearest,
-            SpriteInstance::new([64.0, 168.0], [640.0, 468.0])
-                .with_color([0.06, 0.06, 0.09, 0.82]),
+            SpriteInstance::new([64.0, 198.0], [540.0, 444.0])
+                .with_color([0.06, 0.06, 0.09, 0.78]),
         );
 
         let is_small = font.line_height() <= 10.0;
@@ -1800,7 +1865,8 @@ impl ResultsSummaryState {
         );
 
         buf.clear();
-        let _ = write!(buf, "Clear: {:.0}%", self.clear_percent.floor());
+        let roll = ((self.elapsed_s / 1.4).clamp(0.0, 1.0) as f64) * self.clear_percent;
+        let _ = write!(buf, "Clear: {:.0}%", roll.floor());
         font.draw_bytes_outlined(
             batcher,
             font_tex,
@@ -1831,14 +1897,20 @@ impl ResultsSummaryState {
             [0.0, 0.0, 0.0, 1.0],
         );
 
-        // Right-side Rank panel.
-        batcher.push(
-            white_tex,
-            BlendMode::Normal,
-            FilterMode::Nearest,
-            SpriteInstance::new([748.0, 168.0], [468.0, 468.0])
-                .with_color([0.06, 0.06, 0.09, 0.82]),
-        );
+        // Right-side Rank panel when animated Results character is unavailable.
+        let has_char_anim = self
+            .visuals
+            .as_ref()
+            .is_some_and(|v| !v.char_parts.is_empty());
+        if !has_char_anim {
+            batcher.push(
+                white_tex,
+                BlendMode::Normal,
+                FilterMode::Nearest,
+                SpriteInstance::new([748.0, 168.0], [468.0, 468.0])
+                    .with_color([0.06, 0.06, 0.09, 0.82]),
+            );
+        }
 
         font.draw_bytes_outlined(
             batcher,

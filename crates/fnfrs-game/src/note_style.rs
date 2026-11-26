@@ -7,7 +7,8 @@ use fnfrs_core::constants::{
     DEFAULT_NOTE_STYLE, INITIAL_OFFSET, KEY_COUNT, NUDGE, STRUMLINE_SIZE,
 };
 use fnfrs_core::paths::AssetLocator;
-use fnfrs_core::schema::notestyle::NoteStyleData;
+use fnfrs_core::schema::notestyle::{NoteStyleAssetData, NoteStyleData, NoteStyleDataEmpty};
+use fnfrs_core::scoring::Judgement;
 use fnfrs_render::{
     AtlasFrame, BlendMode, FilterMode, GpuContext, SparrowAtlas, SpriteBatcher, SpriteInstance,
     TextureHandle, SPRITE_FLAG_FLIP_X, SPRITE_FLAG_FLIP_Y, SPRITE_FLAG_PIXEL_SNAP,
@@ -176,6 +177,40 @@ pub struct NoteStyleAssets {
     pub cover_end: [Vec<AtlasFrame>; KEY_COUNT],
 
     pub health_bar_tex: Option<(TextureHandle, [f32; 2])>,
+    pub popup_judgements: [PopupAssetSprite; 4],
+    pub popup_digits: [PopupAssetSprite; 10],
+}
+
+/// Loaded judgement/combo digit popup PNG asset from a `NoteStyleData`.
+#[derive(Debug, Clone, Copy)]
+pub struct PopupAssetSprite {
+    pub tex: Option<(TextureHandle, [f32; 2])>,
+    pub scale: f32,
+    pub offsets: [f32; 2],
+    pub is_pixel: bool,
+    pub alpha: f32,
+}
+
+impl Default for PopupAssetSprite {
+    fn default() -> Self {
+        Self {
+            tex: None,
+            scale: 1.0,
+            offsets: [0.0, 0.0],
+            is_pixel: false,
+            alpha: 1.0,
+        }
+    }
+}
+
+impl PopupAssetSprite {
+    #[must_use]
+    pub fn scaled_size(&self) -> [f32; 2] {
+        match self.tex {
+            Some((_, sz)) => [sz[0] * self.scale, sz[1] * self.scale],
+            None => [260.0, 96.0],
+        }
+    }
 }
 
 impl Default for NoteStyleAssets {
@@ -228,6 +263,8 @@ impl NoteStyleAssets {
             cover_loop: [Vec::new(), Vec::new(), Vec::new(), Vec::new()],
             cover_end: [Vec::new(), Vec::new(), Vec::new(), Vec::new()],
             health_bar_tex: None,
+            popup_judgements: [PopupAssetSprite::default(); 4],
+            popup_digits: [PopupAssetSprite::default(); 10],
         }
     }
 
@@ -448,12 +485,120 @@ impl NoteStyleAssets {
             }
         }
 
+        out.load_popups_from_data(&data, assets, gpu);
+
         out
+    }
+
+    fn load_popups_from_data(
+        &mut self,
+        data: &NoteStyleData,
+        assets: &AssetLocator,
+        gpu: &mut GpuContext,
+    ) {
+        let fallback_data = data
+            .fallback
+            .as_deref()
+            .filter(|id| !id.is_empty())
+            .or_else(|| (!self.style_id.eq_ignore_ascii_case(DEFAULT_NOTE_STYLE)).then_some(DEFAULT_NOTE_STYLE))
+            .and_then(|fb_id| {
+                let raw = fs::read_to_string(assets.data_json(&format!("notestyles/{fb_id}"))).ok()?;
+                serde_json::from_str::<NoteStyleData>(&raw).ok()
+            });
+
+        let fb_assets = fallback_data.as_ref().map(|d| &d.assets);
+        let judgements = [
+            (
+                data.assets.judgement_sick.as_ref().or_else(|| fb_assets.and_then(|f| f.judgement_sick.as_ref())),
+                "ui/popup/funkin/sick",
+                0.65_f32,
+            ),
+            (
+                data.assets.judgement_good.as_ref().or_else(|| fb_assets.and_then(|f| f.judgement_good.as_ref())),
+                "ui/popup/funkin/good",
+                0.65_f32,
+            ),
+            (
+                data.assets.judgement_bad.as_ref().or_else(|| fb_assets.and_then(|f| f.judgement_bad.as_ref())),
+                "ui/popup/funkin/bad",
+                0.65_f32,
+            ),
+            (
+                data.assets.judgement_shit.as_ref().or_else(|| fb_assets.and_then(|f| f.judgement_shit.as_ref())),
+                "ui/popup/funkin/shit",
+                0.65_f32,
+            ),
+        ];
+        for (idx, (cfg, def_key, def_scale)) in judgements.into_iter().enumerate() {
+            self.popup_judgements[idx] = load_popup_asset(cfg, def_key, def_scale, assets, gpu);
+        }
+
+        let digits = [
+            (data.assets.combo_number0.as_ref().or_else(|| fb_assets.and_then(|f| f.combo_number0.as_ref())), "ui/popup/funkin/num0"),
+            (data.assets.combo_number1.as_ref().or_else(|| fb_assets.and_then(|f| f.combo_number1.as_ref())), "ui/popup/funkin/num1"),
+            (data.assets.combo_number2.as_ref().or_else(|| fb_assets.and_then(|f| f.combo_number2.as_ref())), "ui/popup/funkin/num2"),
+            (data.assets.combo_number3.as_ref().or_else(|| fb_assets.and_then(|f| f.combo_number3.as_ref())), "ui/popup/funkin/num3"),
+            (data.assets.combo_number4.as_ref().or_else(|| fb_assets.and_then(|f| f.combo_number4.as_ref())), "ui/popup/funkin/num4"),
+            (data.assets.combo_number5.as_ref().or_else(|| fb_assets.and_then(|f| f.combo_number5.as_ref())), "ui/popup/funkin/num5"),
+            (data.assets.combo_number6.as_ref().or_else(|| fb_assets.and_then(|f| f.combo_number6.as_ref())), "ui/popup/funkin/num6"),
+            (data.assets.combo_number7.as_ref().or_else(|| fb_assets.and_then(|f| f.combo_number7.as_ref())), "ui/popup/funkin/num7"),
+            (data.assets.combo_number8.as_ref().or_else(|| fb_assets.and_then(|f| f.combo_number8.as_ref())), "ui/popup/funkin/num8"),
+            (data.assets.combo_number9.as_ref().or_else(|| fb_assets.and_then(|f| f.combo_number9.as_ref())), "ui/popup/funkin/num9"),
+        ];
+        for (idx, (cfg, def_key)) in digits.into_iter().enumerate() {
+            self.popup_digits[idx] = load_popup_asset(cfg, def_key, 0.45, assets, gpu);
+        }
     }
 
     fn load_default_sheets(&mut self, assets: &AssetLocator, gpu: &mut GpuContext) {
         self.hold_tex =
             upload_png_from_path(gpu, Some("NOTE_hold_assets"), &assets.image("NOTE_hold_assets"));
+        for (idx, key) in [
+            "ui/popup/funkin/sick",
+            "ui/popup/funkin/good",
+            "ui/popup/funkin/bad",
+            "ui/popup/funkin/shit",
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            self.popup_judgements[idx] = PopupAssetSprite {
+                tex: upload_png_from_path(gpu, Some(key), &assets.image(key)),
+                scale: 0.65,
+                offsets: [0.0, 0.0],
+                is_pixel: false,
+                alpha: 1.0,
+            };
+        }
+        for idx in 0..10 {
+            let key = format!("ui/popup/funkin/num{idx}");
+            self.popup_digits[idx] = PopupAssetSprite {
+                tex: upload_png_from_path(gpu, Some(&key), &assets.image(&key)),
+                scale: 0.45,
+                offsets: [0.0, 0.0],
+                is_pixel: false,
+                alpha: 1.0,
+            };
+        }
+    }
+
+    /// Returns the popup sprite descriptor for a scoreable [`Judgement`].
+    #[must_use]
+    pub fn popup_rating_sprite(&self, j: Judgement) -> Option<&PopupAssetSprite> {
+        let idx = match j {
+            Judgement::Sick => 0,
+            Judgement::Good => 1,
+            Judgement::Bad => 2,
+            Judgement::Shit => 3,
+            Judgement::Miss => return None,
+        };
+        Some(&self.popup_judgements[idx])
+    }
+
+    /// Returns the popup sprite descriptor for combo digit `0..=9`.
+    #[must_use]
+    pub fn popup_digit_sprite(&self, digit: u8) -> Option<&PopupAssetSprite> {
+        self.popup_digits.get((digit % 10) as usize)
     }
 
     /// Returns `true` if `noteStrumline` Sparrow frames were loaded.
@@ -525,7 +670,37 @@ impl NoteStyleAssets {
         } else {
             0.0
         };
+        for i in 0..4 {
+            style.popup_rating_sizes[i] = self.popup_judgements[i].scaled_size();
+            style.popup_rating_offsets[i] = self.popup_judgements[i].offsets;
+            style.popup_rating_pixel[i] = self.popup_judgements[i].is_pixel;
+        }
+        for i in 0..10 {
+            style.popup_digit_offsets[i] = self.popup_digits[i].offsets;
+            style.popup_digit_pixel[i] = self.popup_digits[i].is_pixel;
+        }
         style
+    }
+}
+
+fn load_popup_asset(
+    cfg: Option<&NoteStyleAssetData<NoteStyleDataEmpty>>,
+    fallback_key: &str,
+    fallback_scale: f32,
+    assets: &AssetLocator,
+    gpu: &mut GpuContext,
+) -> PopupAssetSprite {
+    let key = cfg
+        .and_then(|c| c.asset_path.as_deref())
+        .unwrap_or(fallback_key);
+    let tex = upload_png_from_path(gpu, Some(key), &assets.image(key))
+        .or_else(|| upload_png_from_path(gpu, Some(fallback_key), &assets.image(fallback_key)));
+    PopupAssetSprite {
+        tex,
+        scale: cfg.map_or(fallback_scale, |c| if c.scale > 0.0 { c.scale } else { fallback_scale }),
+        offsets: cfg.map_or([0.0, 0.0], |c| c.offsets),
+        is_pixel: cfg.is_some_and(|c| c.is_pixel),
+        alpha: cfg.map_or(1.0, |c| c.alpha),
     }
 }
 

@@ -119,14 +119,39 @@ fn decode_media_source(
     let mut stereo_pcm: Vec<f32> = Vec::new();
     let mut pkt_pcm: Vec<f32> = Vec::new();
 
-    while let Some(packet) = format.next_packet()? {
+    loop {
+        let packet = match format.next_packet() {
+            Ok(Some(packet)) => packet,
+            Ok(None) => break,
+            Err(SymphoniaError::IoError(ref io_err))
+                if io_err.kind() == std::io::ErrorKind::UnexpectedEof =>
+            {
+                // Some V-Slice `.ogg` assets (e.g. `2hot/Voices-darnell.ogg`) lack a trailing OGG EOS page.
+                break;
+            }
+            Err(SymphoniaError::ResetRequired) => {
+                decoder.reset();
+                continue;
+            }
+            Err(err) => {
+                if !stereo_pcm.is_empty() {
+                    break;
+                }
+                return Err(err.into());
+            }
+        };
         if packet.track_id != track_id {
             continue;
         }
         let decoded = match decoder.decode(&packet) {
             Ok(buf) => buf,
             Err(SymphoniaError::DecodeError(_)) => continue,
-            Err(err) => return Err(err.into()),
+            Err(err) => {
+                if !stereo_pcm.is_empty() {
+                    break;
+                }
+                return Err(err.into());
+            }
         };
 
         let spec = decoded.spec();
