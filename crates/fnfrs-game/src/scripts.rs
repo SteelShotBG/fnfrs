@@ -1723,7 +1723,7 @@ impl NativeScriptHost {
                         3 => "car3",
                         _ => "car4",
                     };
-                    if let Some(st) = stage {
+                    if let Some(ref mut st) = stage {
                         if let Some(c) = st.get_named_prop_mut("phillyCars") {
                             if let Some(bop) = &mut c.bopper {
                                 bop.play_animation(anim_str, true);
@@ -1780,7 +1780,7 @@ impl NativeScriptHost {
                         3 => "car3",
                         _ => "car4",
                     };
-                    if let Some(st) = stage {
+                    if let Some(ref mut st) = stage {
                         if let Some(c) = st.get_named_prop_mut("phillyCars2") {
                             if let Some(bop) = &mut c.bopper {
                                 bop.play_animation(anim_str, true);
@@ -1809,7 +1809,7 @@ impl NativeScriptHost {
                     *lights_stop = !*lights_stop;
                     if *lights_stop {
                         *change_interval = 20;
-                        if let Some(st) = stage {
+                        if let Some(ref mut st) = stage {
                             if let Some(t) = st.get_named_prop_mut("phillyTraffic") {
                                 if let Some(bop) = &mut t.bopper {
                                     bop.play_animation("tored", true);
@@ -1818,7 +1818,7 @@ impl NativeScriptHost {
                         }
                     } else {
                         *change_interval = 30;
-                        if let Some(st) = stage {
+                        if let Some(ref mut st) = stage {
                             if let Some(t) = st.get_named_prop_mut("phillyTraffic") {
                                 if let Some(bop) = &mut t.bopper {
                                     bop.play_animation("togreen", true);
@@ -1880,7 +1880,7 @@ impl NativeScriptHost {
             } => {
                 let beat_s = (beat_length_ms / 1000.0).max(0.1) as f32;
                 *light_alpha = (*light_alpha - (beat_s * elapsed_s * 1.5)).max(0.0);
-                if let Some(st) = stage {
+                if let Some(ref mut st) = stage {
                     if let Some(lights) = st.get_named_prop_mut("lights") {
                         lights.alpha = *light_alpha;
                     }
@@ -1897,7 +1897,7 @@ impl NativeScriptHost {
                             }
                         }
                         if *train_started {
-                            if let Some(st) = stage {
+                            if let Some(ref mut st) = stage {
                                 if let Some(train) = st.get_named_prop_mut("train") {
                                     train.position[0] -= 400.0;
                                     if train.position[0] < -2000.0 && !*train_finishing {
@@ -1933,7 +1933,7 @@ impl NativeScriptHost {
             } => {
                 if *fast_car_active {
                     *fast_car_timer_s += elapsed_s;
-                    if let Some(st) = stage {
+                    if let Some(ref mut st) = stage {
                         if let Some(car) = st.get_named_prop_mut("fastCar") {
                             car.position[0] += *fast_car_vx * elapsed_s;
                         }
@@ -1941,7 +1941,7 @@ impl NativeScriptHost {
                     if *fast_car_timer_s >= 2.0 {
                         *fast_car_active = false;
                         *fast_car_can_drive = true;
-                        if let Some(st) = stage {
+                        if let Some(ref mut st) = stage {
                             if let Some(car) = st.get_named_prop_mut("fastCar") {
                                 car.position[0] = -12600.0;
                                 car.position[1] = self.rng.range_i32(350, 380) as f32;

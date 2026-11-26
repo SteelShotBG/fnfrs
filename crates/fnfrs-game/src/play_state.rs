@@ -1156,7 +1156,7 @@ impl PlayScene {
                     .as_ref()
                     .and_then(|a| a.sfx_slots[sfx.as_index()])
                 {
-                    if let Some(engine) = audio {
+                    if let Some(ref mut engine) = audio {
                         let _ = engine.send(AudioCommand::PlaySfx {
                             slot,
                             gain: COUNTDOWN_VOLUME,
@@ -1180,7 +1180,7 @@ impl PlayScene {
             }
 
             if tick.finished_now {
-                if let Some(engine) = audio {
+                if let Some(ref mut engine) = audio {
                     let _ = engine.play();
                 }
                 self.session.config.start_timestamp_ms
