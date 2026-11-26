@@ -2175,7 +2175,7 @@ mod tests {
         let mut menu = PauseMenuState::new("Bopeebo", "normal");
         menu.open(false, false, 1);
         let count = menu.item_count();
-        assert_eq!(count, 6);
+        assert_eq!(count, 7);
         assert_eq!(menu.selected, 0);
 
         // Wrap upward from 0 -> last item
