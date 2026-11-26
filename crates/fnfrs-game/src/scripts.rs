@@ -1502,7 +1502,7 @@ impl NativeScriptHost {
         is_player: bool,
         dir: NoteDirection,
         kind: NoteKindTag,
-        character: Option<&mut BaseCharacter>,
+        mut character: Option<&mut BaseCharacter>,
     ) {
         if kind == NoteKindTag::NoAnim {
             return;
