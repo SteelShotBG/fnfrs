@@ -543,7 +543,7 @@ impl ABotSpeaker {
             upload_png_path(gpu, Some("aBotViz"), &png_path),
         ) {
             if let Ok(sparrow) = SparrowAtlas::from_xml(&xml) {
-                for i in 0..7usize {
+                for (i, bar) in viz_bars.iter_mut().enumerate() {
                     let mut prefix_buf = [0u8; 16];
                     let pfx_len = {
                         use std::io::Write as _;
@@ -552,7 +552,7 @@ impl ABotSpeaker {
                         cur.position() as usize
                     };
                     let pfx = std::str::from_utf8(&prefix_buf[..pfx_len]).unwrap_or("");
-                    viz_bars[i] = sparrow.frames_by_prefix(pfx).cloned().collect();
+                    *bar = sparrow.frames_by_prefix(pfx).cloned().collect();
                 }
                 viz_tex = Some(tex_pair);
             }
@@ -647,10 +647,8 @@ impl ABotSpeaker {
                             self.blink_countdown -= 1;
                         }
                     }
-                    NeneState::Lower => {
-                        if gf.current_animation() != "lowerKnife" {
-                            gf.play_animation("lowerKnife", true, true);
-                        }
+                    NeneState::Lower if gf.current_animation() != "lowerKnife" => {
+                        gf.play_animation("lowerKnife", true, true);
                     }
                     _ => {}
                 }
@@ -1171,6 +1169,7 @@ impl QuadCarTween {
 enum StageScript {
     None,
     SpookyMansion {
+        #[allow(dead_code)]
         is_erect: bool,
         lightning_strike_beat: i32,
         lightning_strike_offset: i32,
@@ -1724,7 +1723,7 @@ impl NativeScriptHost {
                         3 => "car3",
                         _ => "car4",
                     };
-                    if let Some(st) = stage.as_deref_mut() {
+                    if let Some(st) = stage {
                         if let Some(c) = st.get_named_prop_mut("phillyCars") {
                             if let Some(bop) = &mut c.bopper {
                                 bop.play_animation(anim_str, true);
@@ -1781,7 +1780,7 @@ impl NativeScriptHost {
                         3 => "car3",
                         _ => "car4",
                     };
-                    if let Some(st) = stage.as_deref_mut() {
+                    if let Some(st) = stage {
                         if let Some(c) = st.get_named_prop_mut("phillyCars2") {
                             if let Some(bop) = &mut c.bopper {
                                 bop.play_animation(anim_str, true);
@@ -1881,7 +1880,7 @@ impl NativeScriptHost {
             } => {
                 let beat_s = (beat_length_ms / 1000.0).max(0.1) as f32;
                 *light_alpha = (*light_alpha - (beat_s * elapsed_s * 1.5)).max(0.0);
-                if let Some(st) = stage.as_deref_mut() {
+                if let Some(st) = stage {
                     if let Some(lights) = st.get_named_prop_mut("lights") {
                         lights.alpha = *light_alpha;
                     }
@@ -1898,7 +1897,7 @@ impl NativeScriptHost {
                             }
                         }
                         if *train_started {
-                            if let Some(st) = stage.as_deref_mut() {
+                            if let Some(st) = stage {
                                 if let Some(train) = st.get_named_prop_mut("train") {
                                     train.position[0] -= 400.0;
                                     if train.position[0] < -2000.0 && !*train_finishing {
@@ -1934,7 +1933,7 @@ impl NativeScriptHost {
             } => {
                 if *fast_car_active {
                     *fast_car_timer_s += elapsed_s;
-                    if let Some(st) = stage.as_deref_mut() {
+                    if let Some(st) = stage {
                         if let Some(car) = st.get_named_prop_mut("fastCar") {
                             car.position[0] += *fast_car_vx * elapsed_s;
                         }
@@ -1980,7 +1979,7 @@ impl NativeScriptHost {
                 ..
             } => {
                 *sky_scroll_x -= elapsed_s * 22.0;
-                if let Some(st) = stage.as_deref_mut() {
+                if let Some(st) = stage {
                     if let Some(c1) = st.get_named_prop_mut("phillyCars") {
                         let was_stopping = car1.stopping_at_lights;
                         let [ref mut c1_x, ref mut c1_y] = c1.position;

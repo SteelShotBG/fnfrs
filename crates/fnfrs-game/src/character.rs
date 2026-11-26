@@ -111,6 +111,7 @@ impl Affine2D {
 
     #[inline]
     #[must_use]
+    #[allow(dead_code)]
     pub(crate) fn transform_point(self, x: f32, y: f32) -> [f32; 2] {
         [self.a * x + self.c * y + self.tx, self.b * x + self.d * y + self.ty]
     }
@@ -539,6 +540,7 @@ pub(crate) struct AtlasDrawParams {
     pub alpha: f32,
     pub blend: BlendMode,
     pub is_pixel: bool,
+    #[allow(dead_code)]
     pub ref_unscaled_size: Option<[f32; 2]>,
 }
 
