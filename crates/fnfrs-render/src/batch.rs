@@ -684,7 +684,7 @@ mod tests {
 
     #[test]
     fn sprite_instance_layout_and_alignment() {
-        assert_eq!(std::mem::size_of::<SpriteInstance>(), 80);
+        assert_eq!(std::mem::size_of::<SpriteInstance>(), 96);
         assert_eq!(std::mem::align_of::<SpriteInstance>(), 4);
         assert!(std::mem::size_of::<SpriteInstance>().is_multiple_of(16));
         assert_eq!(bytemuck::offset_of!(SpriteInstance, pos), 0);
@@ -696,6 +696,7 @@ mod tests {
         assert_eq!(bytemuck::offset_of!(SpriteInstance, origin), 64);
         assert_eq!(bytemuck::offset_of!(SpriteInstance, flags), 72);
         assert_eq!(bytemuck::offset_of!(SpriteInstance, _pad), 76);
+        assert_eq!(bytemuck::offset_of!(SpriteInstance, hsbc), 80);
     }
 
     #[test]
