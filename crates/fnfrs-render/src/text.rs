@@ -1174,7 +1174,7 @@ impl<const N: usize> core::fmt::Write for StackTextBuffer<N> {
 /// around `threshold` so bitmap fonts such as AngelCode `vcr-bmp` render with
 /// hard pixel edges.
 pub fn crisp_alpha_rgba8(rgba8: &mut [u8], threshold: u8) {
-    for px in rgba8.chunks_exact_mut(4) {
+    for px in rgba8.as_chunks_mut::<4>().0 {
         if px[3] >= threshold {
             px[0] = 255;
             px[1] = 255;
