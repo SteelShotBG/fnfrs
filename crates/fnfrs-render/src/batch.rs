@@ -207,7 +207,7 @@ impl SpriteInstance {
         let bright_add = brightness / 255.0;
         let mut c = 1.0 + contrast / 100.0;
         if c > 1.0 {
-            c = (((0.008_522_59 * (4.764_54 * (c - 1.0)).exp()) * 1.01) - 0.008_607_815_9) * 10.0
+            c = (((0.008_522_59 * (4.764_54 * (c - 1.0)).exp()) * 1.01) - 0.008_607_816) * 10.0
                 + 1.0;
         }
         self.hsbc = [hue_rad, sat_mult, bright_add, c];
