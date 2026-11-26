@@ -8,6 +8,9 @@ pub const SPRITE_SHADER_SOURCE: &str = include_str!("shaders/sprite.wgsl");
 /// Embedded WGSL source for the 2D sustain/triangle mesh shader.
 pub const MESH_SHADER_SOURCE: &str = include_str!("shaders/mesh.wgsl");
 
+/// Embedded WGSL source for the fullscreen `RuntimeRainShader` post-process pass.
+pub const RAIN_SHADER_SOURCE: &str = include_str!("shaders/rain.wgsl");
+
 /// Compiles the instanced sprite WGSL shader module on `device`.
 #[must_use]
 pub fn create_sprite_shader_module(device: &wgpu::Device) -> wgpu::ShaderModule {
@@ -26,6 +29,15 @@ pub fn create_mesh_shader_module(device: &wgpu::Device) -> wgpu::ShaderModule {
     })
 }
 
+/// Compiles the fullscreen rain post-processing WGSL shader module on `device`.
+#[must_use]
+pub fn create_rain_shader_module(device: &wgpu::Device) -> wgpu::ShaderModule {
+    device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("fnfrs-rain-shader"),
+        source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(RAIN_SHADER_SOURCE)),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -36,5 +48,7 @@ mod tests {
         assert!(SPRITE_SHADER_SOURCE.contains("fn fs_main"));
         assert!(MESH_SHADER_SOURCE.contains("fn vs_main"));
         assert!(MESH_SHADER_SOURCE.contains("fn fs_main"));
+        assert!(RAIN_SHADER_SOURCE.contains("fn vs_main"));
+        assert!(RAIN_SHADER_SOURCE.contains("fn fs_main"));
     }
 }

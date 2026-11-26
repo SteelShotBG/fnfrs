@@ -22,6 +22,7 @@ const FLAG_FLIP_Y: u32 = 4u;
 const FLAG_PIXEL_SNAP: u32 = 8u;
 const FLAG_ROTATED_90_CCW: u32 = 16u;
 const FLAG_AFFINE: u32 = 32u;
+const FLAG_ADJUST_COLOR: u32 = 64u;
 
 struct SpriteInstanceInput {
     @location(0) pos: vec2<f32>,
@@ -32,6 +33,7 @@ struct SpriteInstanceInput {
     @location(5) rotation: f32,
     @location(6) origin: vec2<f32>,
     @location(7) flags: u32,
+    @location(8) hsbc: vec4<f32>,
 };
 
 struct VertexOutput {
@@ -39,6 +41,8 @@ struct VertexOutput {
     @location(0) uv: vec2<f32>,
     @location(1) color: vec4<f32>,
     @location(2) hsv_shift: vec3<f32>,
+    @location(3) hsbc: vec4<f32>,
+    @location(4) @interpolate(flat) flags: u32,
 };
 
 @vertex
@@ -101,6 +105,8 @@ fn vs_main(
     out.uv = uv;
     out.color = inst.color;
     out.hsv_shift = inst.hsv_shift;
+    out.hsbc = inst.hsbc;
+    out.flags = inst.flags;
     return out;
 }
 
@@ -119,10 +125,40 @@ fn hsv_to_rgb(c: vec3<f32>) -> vec3<f32> {
     return c.z * mix(k.xxx, clamp(p - k.xxx, vec3<f32>(0.0), vec3<f32>(1.0)), c.y);
 }
 
+fn apply_adjust_color(color: vec3<f32>, hsbc: vec4<f32>) -> vec3<f32> {
+    // Matches Adobe Animate/Flash AdjustColorShader.hx (`hsbc = [hue_rad, sat_mult, bright_add, contrast_mult]`).
+    let bh_in = color + hsbc.z;
+    let c = cos(hsbc.x);
+    let s = sin(hsbc.x);
+    let wr = 0.299;
+    let wg = 0.587;
+    let wb = 0.114;
+    let h0 = vec3<f32>(wr + (1.0 - wr) * c - wr * s, wg - wg * c - wg * s, wb - wb * c + (1.0 - wb) * s);
+    let h1 = vec3<f32>(wr - wr * c + 0.143 * s, wg + (1.0 - wg) * c + 0.140 * s, wb - wb * c - 0.283 * s);
+    let h2 = vec3<f32>(wr - wr * c - (1.0 - wr) * s, wg - wg * c + wg * s, wb + (1.0 - wb) * c + wb * s);
+    let bh = vec3<f32>(dot(bh_in, h0), dot(bh_in, h1), dot(bh_in, h2));
+
+    let contrasted = (bh - 0.25) * hsbc.w + 0.25;
+
+    let lr = 0.2126;
+    let lg = 0.7152;
+    let lb = 0.0722;
+    let sat = hsbc.y;
+    let inv = 1.0 - sat;
+    let s0 = vec3<f32>(lr * inv + sat, lg * inv, lb * inv);
+    let s1 = vec3<f32>(lr * inv, lg * inv + sat, lb * inv);
+    let s2 = vec3<f32>(lr * inv, lg * inv, lb * inv + sat);
+    return vec3<f32>(dot(contrasted, s0), dot(contrasted, s1), dot(contrasted, s2));
+}
+
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let tex_color = textureSample(sprite_tex, sprite_sampler, in.uv);
     var rgb = tex_color.rgb;
+
+    if (in.flags & FLAG_ADJUST_COLOR) != 0u {
+        rgb = apply_adjust_color(rgb, in.hsbc);
+    }
 
     if any(in.hsv_shift != vec3<f32>(0.0)) {
         var hsv = rgb_to_hsv(rgb);

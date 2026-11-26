@@ -444,6 +444,7 @@ impl LoadedAnimateProp {
             alpha: color[3],
             blend: BlendMode::Normal,
             is_pixel: false,
+            adjust_color: None,
             ref_unscaled_size: None,
         };
         draw_animate_parts(
@@ -1213,11 +1214,21 @@ enum StageScript {
     },
 }
 
+/// Active fullscreen `RuntimeRainShader` parameters passed to `RainPostPass`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct RainShaderParams {
+    pub time: f32,
+    pub scale: f32,
+    pub intensity: f32,
+    pub color: [f32; 3],
+}
+
 /// Coordinates all hardcoded V-Slice stage and character `.hxc` behaviors cleanly
 /// with zero heap allocations inside update/render loops.
 #[derive(Debug)]
 pub struct NativeScriptHost {
     song_id: String,
+    stage_id_lower: String,
     stage_script: StageScript,
     spirit_trail: SpiritTrail,
     speaker_shooter: SpeakerShooter,
@@ -1225,6 +1236,14 @@ pub struct NativeScriptHost {
     runners: TankmanRunners,
     sfx: ScriptSfxSlots,
     rng: ScriptRng,
+    rain_enabled: bool,
+    rain_time: f32,
+    rain_scale: f32,
+    rain_intensity: f32,
+    rain_start_intensity: f32,
+    rain_end_intensity: f32,
+    rain_duration_ms: f64,
+    rain_color: [f32; 3],
 }
 
 impl NativeScriptHost {
@@ -1316,8 +1335,25 @@ impl NativeScriptHost {
         let abot = ABotSpeaker::load(gf_id, stage_id, gf, assets, gpu);
         let runners = TankmanRunners::load(stage_id, picospeaker_notes, assets, gpu, &mut rng);
 
+        let rain_enabled = stage_lower == "phillystreetserect";
+        let (rain_start_intensity, rain_end_intensity) = if rain_enabled {
+            let song_lower = song_id.to_ascii_lowercase();
+            if song_lower == "darnell" {
+                (0.002, 0.01)
+            } else if song_lower == "lit-up" {
+                (0.01, 0.02)
+            } else if song_lower == "2hot" {
+                (0.02, 0.04)
+            } else {
+                (0.01, 0.02)
+            }
+        } else {
+            (0.0, 0.0)
+        };
+
         Self {
             song_id: song_id.to_owned(),
+            stage_id_lower: stage_lower,
             stage_script,
             spirit_trail,
             speaker_shooter,
@@ -1325,6 +1361,14 @@ impl NativeScriptHost {
             runners,
             sfx,
             rng,
+            rain_enabled,
+            rain_time: 1.0,
+            rain_scale: 3.6,
+            rain_intensity: rain_start_intensity,
+            rain_start_intensity,
+            rain_end_intensity,
+            rain_duration_ms: 180_000.0,
+            rain_color: [0.659, 0.678, 0.710],
         }
     }
 
@@ -1333,6 +1377,7 @@ impl NativeScriptHost {
     pub fn empty() -> Self {
         Self {
             song_id: String::new(),
+            stage_id_lower: String::new(),
             stage_script: StageScript::None,
             spirit_trail: SpiritTrail::default(),
             speaker_shooter: SpeakerShooter::default(),
@@ -1340,11 +1385,48 @@ impl NativeScriptHost {
             runners: TankmanRunners::default(),
             sfx: ScriptSfxSlots::default(),
             rng: ScriptRng(0x5A17_C0DE),
+            rain_enabled: false,
+            rain_time: 0.0,
+            rain_scale: 3.6,
+            rain_intensity: 0.0,
+            rain_start_intensity: 0.0,
+            rain_end_intensity: 0.0,
+            rain_duration_ms: 180_000.0,
+            rain_color: [0.659, 0.678, 0.710],
         }
     }
 
-    /// Applies one-time initial stage setup after characters & stage props are placed.
-    pub fn on_stage_ready(&mut self, stage: Option<&mut Stage>) {
+    /// Sets song duration for gradual Weekend 1 rain intensity interpolation.
+    pub fn set_song_duration_ms(&mut self, duration_ms: f64) {
+        if duration_ms > 1.0 {
+            self.rain_duration_ms = duration_ms;
+        }
+    }
+
+    /// Returns active fullscreen rain shader uniforms when rendering `phillyStreetsErect`.
+    #[must_use]
+    pub fn rain_params(&self) -> Option<RainShaderParams> {
+        if self.rain_enabled && self.rain_intensity > 0.0 {
+            Some(RainShaderParams {
+                time: self.rain_time,
+                scale: self.rain_scale,
+                intensity: self.rain_intensity,
+                color: self.rain_color,
+            })
+        } else {
+            None
+        }
+    }
+
+    /// Applies one-time initial stage setup & Erect `AdjustColor` shaders after placement.
+    pub fn on_stage_ready(
+        &mut self,
+        mut stage: Option<&mut Stage>,
+        bf: Option<&mut BaseCharacter>,
+        dad: Option<&mut BaseCharacter>,
+        gf: Option<&mut BaseCharacter>,
+    ) {
+        apply_erect_adjust_color(&self.stage_id_lower, stage.as_deref_mut(), bf, dad, gf);
         if let StageScript::School = self.stage_script {
             if self.song_id.eq_ignore_ascii_case("roses") {
                 if let Some(st) = stage {
@@ -1865,6 +1947,16 @@ impl NativeScriptHost {
         self.speaker_shooter
             .update(song_pos_ms, gf.as_deref_mut(), &mut self.rng);
         self.runners.update(elapsed_s, song_pos_ms, &mut self.rng);
+        if self.rain_enabled {
+            self.rain_time += elapsed_s.max(0.0);
+            if song_pos_ms >= 0.0 && self.rain_duration_ms > 1.0 {
+                let t = (song_pos_ms / self.rain_duration_ms).clamp(0.0, 1.0) as f32;
+                self.rain_intensity = self.rain_start_intensity
+                    + (self.rain_end_intensity - self.rain_start_intensity) * t;
+            } else {
+                self.rain_intensity = self.rain_start_intensity;
+            }
+        }
 
         let mut train_passing_flag = false;
         match &mut self.stage_script {
@@ -2120,5 +2212,90 @@ fn draw_tiled_x(
             FilterMode::Linear,
             SpriteInstance::new(sp, ss),
         );
+    }
+}
+
+fn apply_erect_adjust_color(
+    stage_lower: &str,
+    stage: Option<&mut Stage>,
+    bf: Option<&mut BaseCharacter>,
+    dad: Option<&mut BaseCharacter>,
+    gf: Option<&mut BaseCharacter>,
+) {
+    let set_char = |ch: Option<&mut BaseCharacter>, hsbc: [f32; 4]| {
+        if let Some(c) = ch {
+            c.adjust_color = Some(hsbc);
+        }
+    };
+    let set_prop = |st: &mut Stage, name: &str, hsbc: [f32; 4]| {
+        if let Some(p) = st.get_named_prop_mut(name) {
+            p.adjust_color = Some(hsbc);
+        }
+    };
+
+    match stage_lower {
+        "mainstageerect" => {
+            set_char(bf, [12.0, 0.0, -23.0, 7.0]);
+            set_char(gf, [-9.0, 0.0, -30.0, -4.0]);
+            set_char(dad, [-32.0, 0.0, -33.0, -23.0]);
+        }
+        "limorideerect" => {
+            let hsbc = [-30.0, -20.0, -30.0, 0.0];
+            set_char(bf, hsbc);
+            set_char(gf, hsbc);
+            set_char(dad, hsbc);
+            if let Some(st) = stage {
+                for name in [
+                    "limoDancer1",
+                    "limoDancer2",
+                    "limoDancer3",
+                    "limoDancer4",
+                    "limoDancer5",
+                    "bgLimo",
+                ] {
+                    set_prop(st, name, hsbc);
+                }
+            }
+        }
+        "mallxmaserect" => {
+            let chars_hsbc = [5.0, 20.0, 0.0, 0.0];
+            set_char(bf, chars_hsbc);
+            set_char(gf, chars_hsbc);
+            set_char(dad, chars_hsbc);
+            if let Some(st) = stage {
+                let boppers_hsbc = [15.0, 0.0, 20.0, 0.0];
+                set_prop(st, "bottomBoppers", boppers_hsbc);
+                set_prop(st, "upperBoppers", boppers_hsbc);
+            }
+        }
+        "phillytrainerect" => {
+            let hsbc = [-26.0, -16.0, -5.0, 0.0];
+            set_char(bf, hsbc);
+            set_char(gf, hsbc);
+            set_char(dad, hsbc);
+        }
+        "phillystreetserect" => {
+            let hsbc = [-5.0, -40.0, -20.0, -25.0];
+            set_char(bf, hsbc);
+            set_char(gf, hsbc);
+            set_char(dad, hsbc);
+            if let Some(st) = stage {
+                for name in ["phillyCars", "phillyCars2", "phillyTraffic", "spraycanPile"] {
+                    set_prop(st, name, hsbc);
+                }
+            }
+        }
+        "schoolerect" => {
+            set_char(bf, [-10.0, 0.0, -16.0, 12.0]);
+            set_char(gf, [-10.0, 0.0, -20.0, 8.0]);
+            set_char(dad, [-10.0, 0.0, -16.0, 12.0]);
+        }
+        "tankmanbattlefielderect" => {
+            let hsbc = [-38.0, -20.0, -25.0, 0.0];
+            set_char(bf, hsbc);
+            set_char(gf, hsbc);
+            set_char(dad, hsbc);
+        }
+        _ => {}
     }
 }

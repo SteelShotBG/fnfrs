@@ -1044,7 +1044,15 @@ impl PlayScene {
 
     /// Attaches a populated [`NativeScriptHost`] and runs initial stage setup hooks.
     pub fn attach_scripts(&mut self, mut scripts: NativeScriptHost) {
-        scripts.on_stage_ready(self.stage.as_mut());
+        if let Some(dur) = self.scene_config.song_duration_ms {
+            scripts.set_song_duration_ms(dur);
+        }
+        scripts.on_stage_ready(
+            self.stage.as_mut(),
+            self.bf.as_mut(),
+            self.dad.as_mut(),
+            self.gf.as_mut(),
+        );
         self.scripts = scripts;
     }
 

@@ -32,6 +32,9 @@ pub const SPRITE_FLAG_ROTATED_90_CCW: u32 = 1 << 4;
 /// Y-edge vector `(m.c*h, m.d*h)` for arbitrary 2D affine transforms (including skew).
 pub const SPRITE_FLAG_AFFINE: u32 = 1 << 5;
 
+/// Flag enabling Flash `AdjustColor` (`hsbc = [hue_rad, sat_mult, bright_add, contrast_mult]`).
+pub const SPRITE_FLAG_ADJUST_COLOR: u32 = 1 << 6;
+
 /// Blend mode used when drawing sprite or mesh batches.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum BlendMode {
@@ -77,7 +80,7 @@ impl BlendMode {
 
 /// Per-instance GPU data uploaded to the sprite instance buffer.
 ///
-/// Layout is 80 bytes (`#[repr(C)]`, zero implicit padding):
+/// Layout is 96 bytes (`#[repr(C)]`, zero implicit padding):
 /// - `pos`: top-left position in world/virtual pixels
 /// - `size`: unrotated drawn width and height in world/virtual pixels
 /// - `uv_rect`: normalized `[u0, v0, u1, v1]`
@@ -86,6 +89,7 @@ impl BlendMode {
 /// - `rotation`: clockwise rotation in radians around `origin`
 /// - `origin`: local pivot offset relative to top-left `pos`
 /// - `flags`: bitmask of `SPRITE_FLAG_*` constants
+/// - `hsbc`: Flash `AdjustColor` `[hue_rad, sat_mult, bright_add, contrast_mult]`
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Pod, Zeroable)]
 pub struct SpriteInstance {
@@ -98,9 +102,10 @@ pub struct SpriteInstance {
     pub origin: [f32; 2],
     pub flags: u32,
     pub _pad: f32,
+    pub hsbc: [f32; 4],
 }
 
-const _: () = assert!(std::mem::size_of::<SpriteInstance>() == 80);
+const _: () = assert!(std::mem::size_of::<SpriteInstance>() == 96);
 
 impl Default for SpriteInstance {
     fn default() -> Self {
@@ -114,6 +119,7 @@ impl Default for SpriteInstance {
             origin: [0.0, 0.0],
             flags: 0,
             _pad: 0.0,
+            hsbc: [0.0, 1.0, 0.0, 1.0],
         }
     }
 }
@@ -133,6 +139,7 @@ impl SpriteInstance {
             origin: [0.0, 0.0],
             flags: 0,
             _pad: 0.0,
+            hsbc: [0.0, 1.0, 0.0, 1.0],
         }
     }
 
@@ -185,11 +192,34 @@ impl SpriteInstance {
         self
     }
 
+    /// Applies Adobe Animate / Flash `AdjustColor` (`hue_deg`, `saturation`, `brightness`, `contrast`).
+    #[inline]
+    #[must_use]
+    pub fn with_adjust_color(
+        mut self,
+        hue_deg: f32,
+        saturation: f32,
+        brightness: f32,
+        contrast: f32,
+    ) -> Self {
+        let hue_rad = hue_deg.to_radians();
+        let sat_mult = 1.0 + (if saturation > 0.0 { saturation * 3.0 } else { saturation }) / 100.0;
+        let bright_add = brightness / 255.0;
+        let mut c = 1.0 + contrast / 100.0;
+        if c > 1.0 {
+            c = (((0.008_522_59 * (4.764_54 * (c - 1.0)).exp()) * 1.01) - 0.008_607_815_9) * 10.0
+                + 1.0;
+        }
+        self.hsbc = [hue_rad, sat_mult, bright_add, c];
+        self.flags |= SPRITE_FLAG_ADJUST_COLOR;
+        self
+    }
+
     /// Returns the `wgpu::VertexBufferLayout` describing `SpriteInstance` at
-    /// shader locations `0..=7`.
+    /// shader locations `0..=8`.
     #[must_use]
     pub const fn vertex_buffer_layout() -> wgpu::VertexBufferLayout<'static> {
-        const ATTRIBS: [wgpu::VertexAttribute; 8] = [
+        const ATTRIBS: [wgpu::VertexAttribute; 9] = [
             wgpu::VertexAttribute {
                 offset: 0,
                 shader_location: 0,
@@ -229,6 +259,11 @@ impl SpriteInstance {
                 offset: 72,
                 shader_location: 7,
                 format: wgpu::VertexFormat::Uint32,
+            },
+            wgpu::VertexAttribute {
+                offset: 80,
+                shader_location: 8,
+                format: wgpu::VertexFormat::Float32x4,
             },
         ];
 

@@ -267,6 +267,7 @@ pub struct StageProp {
     pub flip_y: bool,
     pub blend: BlendMode,
     pub color: [f32; 4],
+    pub adjust_color: Option<[f32; 4]>,
     pub is_pixel: bool,
     pub is_hud: bool,
     pub visible: bool,
@@ -299,6 +300,7 @@ impl StageProp {
             flip_y: false,
             blend: BlendMode::Normal,
             color: parse_stage_color(color_hex),
+            adjust_color: None,
             is_pixel: false,
             is_hud: false,
             visible: true,
@@ -474,6 +476,7 @@ impl StageProp {
             flip_y: data.flip_y,
             blend: parse_blend_mode(&data.blend),
             color: prop_color,
+            adjust_color: None,
             is_pixel: data.is_pixel,
             is_hud: false,
             visible: true,
@@ -572,10 +575,13 @@ impl StageProp {
                     self.color[3] * self.alpha,
                 ];
                 let origin = [screen_size[0] * 0.5, screen_size[1] * 0.5];
-                let inst = SpriteInstance::new(screen_pos, screen_size)
+                let mut inst = SpriteInstance::new(screen_pos, screen_size)
                     .with_color(tint)
                     .with_rotation(self.angle.to_radians(), origin)
                     .with_flags(flags);
+                if let Some([h, s, b, c]) = self.adjust_color {
+                    inst = inst.with_adjust_color(h, s, b, c);
+                }
                 batcher.push(*texture, self.blend, filter, inst);
             }
             PropVisual::Animated => {
@@ -597,6 +603,7 @@ impl StageProp {
                     alpha: self.alpha,
                     blend: self.blend,
                     is_pixel: self.is_pixel,
+                    adjust_color: self.adjust_color,
                     ref_unscaled_size: None,
                 };
                 bop.bank.draw_current(batcher, &params);

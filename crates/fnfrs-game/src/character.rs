@@ -540,6 +540,7 @@ pub(crate) struct AtlasDrawParams {
     pub alpha: f32,
     pub blend: BlendMode,
     pub is_pixel: bool,
+    pub adjust_color: Option<[f32; 4]>,
     #[allow(dead_code)]
     pub ref_unscaled_size: Option<[f32; 2]>,
 }
@@ -641,11 +642,14 @@ pub(crate) fn draw_atlas_frame(
         params.color[3] * params.alpha,
     ];
 
-    let inst = SpriteInstance::new(screen_pos, screen_size)
+    let mut inst = SpriteInstance::new(screen_pos, screen_size)
         .with_uv_rect(frame.uv_bounds_inset(tex_size[0], tex_size[1], inset_px))
         .with_color(tint)
         .with_rotation(params.angle_deg.to_radians(), origin_rel)
         .with_flags(flags);
+    if let Some([h, s, b, c]) = params.adjust_color {
+        inst = inst.with_adjust_color(h, s, b, c);
+    }
 
     batcher.push(texture, params.blend, filter, inst);
 }
@@ -755,11 +759,14 @@ pub(crate) fn draw_animate_parts(
         ];
 
         // Exact 2x2 affine quad (`pos` = m(0,0), `size` = m(w,0) - m(0,0), `origin` = m(0,h) - m(0,0)).
-        let inst = SpriteInstance::new([m.tx, m.ty], [m.a * upright_w, m.b * upright_w])
+        let mut inst = SpriteInstance::new([m.tx, m.ty], [m.a * upright_w, m.b * upright_w])
             .with_origin([m.c * upright_h, m.d * upright_h])
             .with_uv_rect(uv_bounds)
             .with_color(tint)
             .with_flags(flags);
+        if let Some([h, s, b, c]) = params.adjust_color {
+            inst = inst.with_adjust_color(h, s, b, c);
+        }
 
         batcher.push(tex, params.blend, filter, inst);
     }
@@ -1108,6 +1115,7 @@ pub struct BaseCharacter {
     pub alpha: f32,
     pub angle: f32,
     pub is_pixel: bool,
+    pub adjust_color: Option<[f32; 4]>,
     pub flip_x: bool,
     pub data_flip_x: bool,
     pub dance_every: f32,
@@ -1410,6 +1418,7 @@ impl BaseCharacter {
             alpha: 1.0,
             angle: 0.0,
             is_pixel: data.is_pixel,
+            adjust_color: None,
             flip_x,
             data_flip_x: data.flip_x,
             dance_every: data.dance_every,
@@ -1611,6 +1620,7 @@ impl BaseCharacter {
             alpha,
             blend: BlendMode::Normal,
             is_pixel: self.is_pixel,
+            adjust_color: self.adjust_color,
             ref_unscaled_size: Some(self.ref_unscaled_size),
         };
         draw_atlas_frame(
@@ -1966,6 +1976,7 @@ impl BaseCharacter {
             alpha: self.alpha,
             blend: BlendMode::Normal,
             is_pixel: self.is_pixel,
+            adjust_color: self.adjust_color,
             ref_unscaled_size: Some(self.ref_unscaled_size),
         };
         self.bank.draw_current(batcher, &params);
