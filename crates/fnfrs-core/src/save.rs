@@ -233,6 +233,7 @@ impl SaveData {
     }
 
     /// Records a song score if it beats the stored high score; returns `true` on new highscore.
+    #[allow(clippy::too_many_arguments)]
     pub fn record_song_score(
         &mut self,
         song_id: &str,
