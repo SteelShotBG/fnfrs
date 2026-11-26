@@ -2198,7 +2198,7 @@ mod tests {
         assert!(menu.is_open);
 
         // Next frame toggles botplay
-        menu.move_selection(3);
+        menu.move_selection(4);
         assert_eq!(menu.selected_main_option(), Some(PauseMenuOption::ToggleBotplay));
         let act = menu.update(
             0.016,
