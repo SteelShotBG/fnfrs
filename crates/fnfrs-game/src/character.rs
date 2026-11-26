@@ -349,13 +349,6 @@ impl AnimBank {
         true
     }
 
-    pub(crate) fn play_name(&mut self, name: &str, restart: bool) -> bool {
-        let Some(idx) = self.resolve_with_fallback(name) else {
-            return false;
-        };
-        self.play_index(idx, restart)
-    }
-
     /// Advances animation timing with zero heap allocations.
     /// Returns `true` if the animation transitioned to `finished` on this tick.
     pub(crate) fn update(&mut self, elapsed_s: f32) -> bool {

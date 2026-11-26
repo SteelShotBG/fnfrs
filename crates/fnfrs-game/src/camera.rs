@@ -121,10 +121,9 @@ impl FlxEase {
             (prefix, EaseDir::InOut)
         } else if let Some(prefix) = strip_suffix_ignore_ascii_case(name, "out") {
             (prefix, EaseDir::Out)
-        } else if let Some(prefix) = strip_suffix_ignore_ascii_case(name, "in") {
-            (prefix, EaseDir::In)
         } else {
-            return None;
+            let prefix = strip_suffix_ignore_ascii_case(name, "in")?;
+            (prefix, EaseDir::In)
         };
 
         from_base_and_dir(base, dir)

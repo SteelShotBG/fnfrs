@@ -1777,8 +1777,10 @@ mod tests {
             params: Vec::new(),
         }];
 
-        let mut play_cfg = PlayConfig::default();
-        play_cfg.scroll_speed = 1.5;
+        let play_cfg = PlayConfig {
+            scroll_speed: 1.5,
+            ..Default::default()
+        };
         let session =
             PlaySession::from_raw_notes(120.0, &player_notes, &opponent_notes, play_cfg);
 
