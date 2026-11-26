@@ -1260,7 +1260,7 @@ fn present_single_batch(
                 .map(|r| {
                     (
                         r,
-                        gp.scene.camera_rig.cam_game.position,
+                        gp.scene.camera_rig.cam_game.scroll,
                         gp.scene.camera_rig.cam_game.effective_zoom(),
                     )
                 })
