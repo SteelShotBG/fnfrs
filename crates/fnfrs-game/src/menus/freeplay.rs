@@ -50,6 +50,7 @@ pub struct FreeplayScreenState {
     pico_variation: bool,
     atlas_font: AtlasFont,
     playable_char: String,
+    #[allow(dead_code)]
     fav_icon: Option<(TextureHandle, [f32; 2])>,
     pub char_select_requested: bool,
     pub favorite_toggle_requested: Option<(String, String)>,

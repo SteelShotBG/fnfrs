@@ -117,7 +117,9 @@ mod win32_vlc {
         unsafe extern "C" fn(*mut c_void, *const c_char, c_uint, c_uint, c_uint);
 
     pub struct SharedVideoFrame {
+        #[allow(dead_code)]
         pub width: u32,
+        #[allow(dead_code)]
         pub height: u32,
         staging: UnsafeCell<Vec<u8>>,
         front: Mutex<Vec<u8>>,
@@ -362,7 +364,7 @@ mod win32_vlc {
                 );
                 fn_set_fmt(
                     mp,
-                    b"RGBA\0".as_ptr() as *const c_char,
+                    c"RGBA".as_ptr(),
                     VIDEO_FRAME_WIDTH,
                     VIDEO_FRAME_HEIGHT,
                     VIDEO_FRAME_WIDTH * 4,

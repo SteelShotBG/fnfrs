@@ -2463,7 +2463,7 @@ impl NativeScriptHost {
                         if let Some(b) = bf.as_deref_mut() {
                             b.alpha = 0.0;
                         }
-                        if let Some(d) = dad.as_deref_mut() {
+                        if let Some(d) = dad {
                             d.alpha = 0.0;
                         }
                         if let Some(g) = gf.as_deref_mut() {
@@ -2987,10 +2987,10 @@ impl NativeScriptHost {
                     }
                     let char_c = 0.376 + (0.871 - 0.376) * t_fast;
                     let gf_c = 0.376 + (0.533 - 0.376) * t_fast;
-                    if let Some(b) = bf.as_deref_mut() {
+                    if let Some(b) = bf {
                         b.color = [char_c, char_c, char_c, 1.0];
                     }
-                    if let Some(d) = dad.as_deref_mut() {
+                    if let Some(d) = dad {
                         d.color = [char_c, char_c, char_c, 1.0];
                     }
                     if let Some(g) = gf.as_deref_mut() {

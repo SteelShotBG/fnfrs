@@ -134,7 +134,7 @@ fn load_week_props(
 
                     let conf_f = confirm_anim
                         .and_then(|a| a.prefix.as_deref())
-                        .map(|pfx| collect_prop_frames(&atlas, pfx, &confirm_anim.map_or(&[][..], |a| a.frame_indices.as_slice())))
+                        .map(|pfx| collect_prop_frames(&atlas, pfx, confirm_anim.map_or(&[][..], |a| a.frame_indices.as_slice())))
                         .unwrap_or_default();
 
                     let dl_f = dl_anim

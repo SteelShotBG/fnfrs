@@ -570,9 +570,9 @@ impl NoteStyleAssets {
                 alpha: 1.0,
             };
         }
-        for idx in 0..10 {
+        for (idx, digit) in self.popup_digits.iter_mut().enumerate() {
             let key = format!("ui/popup/funkin/num{idx}");
-            self.popup_digits[idx] = PopupAssetSprite {
+            *digit = PopupAssetSprite {
                 tex: upload_png_from_path(gpu, Some(&key), &assets.image(&key)),
                 scale: 0.45,
                 offsets: [0.0, 0.0],

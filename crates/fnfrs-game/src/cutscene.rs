@@ -73,6 +73,7 @@ impl CutsceneController {
     }
 
     /// Starts any matching pre-song cutscene (Story Mode or Pico mix) cleanly.
+    #[allow(clippy::too_many_arguments)]
     pub fn start_pre_song(
         &mut self,
         song_id: &str,
