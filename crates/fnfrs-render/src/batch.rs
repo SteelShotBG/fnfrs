@@ -23,6 +23,10 @@ pub const SPRITE_FLAG_FLIP_Y: u32 = 1 << 2;
 /// Flag indicating final world coordinates should be rounded to integer pixels.
 pub const SPRITE_FLAG_PIXEL_SNAP: u32 = 1 << 3;
 
+/// Flag indicating the subtexture is rotated 90 degrees CW in the atlas and
+/// must be rotated 90 degrees CCW when sampled (Adobe Animate `spritemap` `rotated: true`).
+pub const SPRITE_FLAG_ROTATED_90_CCW: u32 = 1 << 4;
+
 /// Blend mode used when drawing sprite or mesh batches.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum BlendMode {

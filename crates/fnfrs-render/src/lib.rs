@@ -15,7 +15,7 @@ pub use atlas::{
 pub use batch::{
     compute_sprite_corner_uv, BlendMode, FilterMode, SpriteBatchQueue, SpriteBatcher,
     SpriteDrawGroup, SpriteInstance, SPRITE_FLAG_FLIP_X, SPRITE_FLAG_FLIP_Y,
-    SPRITE_FLAG_PIXEL_SNAP, SPRITE_FLAG_ROTATED_90_CW,
+    SPRITE_FLAG_PIXEL_SNAP, SPRITE_FLAG_ROTATED_90_CCW, SPRITE_FLAG_ROTATED_90_CW,
 };
 pub use gpu::{
     compute_letterbox_viewport, orthographic_projection, zoomed_orthographic_projection, GpuContext,

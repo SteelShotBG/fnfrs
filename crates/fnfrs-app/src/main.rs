@@ -276,7 +276,11 @@ impl ApplicationHandler for App {
             game_over_loss_sfx_slot = loss_slot;
         }
 
-        let mut session = create_session(&self.loaded_chart, PlayConfig::default());
+        let initial_config = PlayConfig {
+            scroll_speed: 0.0,
+            ..PlayConfig::default()
+        };
+        let mut session = create_session(&self.loaded_chart, initial_config);
         session.sfx_slots = sfx_slots;
         session.set_strumline_metrics(note_assets.strum_hitbox[1], note_assets.strum_offsets[1]);
 

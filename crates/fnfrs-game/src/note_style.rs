@@ -162,8 +162,10 @@ pub struct NoteStyleAssets {
     pub splash_fps: f32,
     pub splash_pixel: bool,
     pub splash_blend: BlendMode,
+    pub splash_hitbox: [f32; 2],
     pub splash_variants: [Vec<Vec<AtlasFrame>>; KEY_COUNT],
 
+    pub cover_enabled: bool,
     pub cover_tex: [Option<(TextureHandle, [f32; 2])>; KEY_COUNT],
     pub cover_scale: f32,
     pub cover_offsets: [f32; 2],
@@ -214,7 +216,9 @@ impl NoteStyleAssets {
             splash_fps: 24.0,
             splash_pixel: false,
             splash_blend: BlendMode::Add,
+            splash_hitbox: [260.0, 298.0],
             splash_variants: [Vec::new(), Vec::new(), Vec::new(), Vec::new()],
+            cover_enabled: false,
             cover_tex: [None; KEY_COUNT],
             cover_scale: 1.0,
             cover_offsets: [0.0, 0.0],
@@ -369,6 +373,11 @@ impl NoteStyleAssets {
                     let key = splash_cfg.asset_path.as_deref().unwrap_or("shared:noteSplashes");
                     if let Some(sparrow) = load_sparrow_sheet(assets, gpu, key) {
                         out.splash_tex = Some((sparrow.texture, sparrow.tex_size));
+                        if let Some(f0) = sparrow.atlas.frames().first() {
+                            let src = f0.source_size();
+                            out.splash_hitbox =
+                                [src[0] * out.splash_scale, src[1] * out.splash_scale];
+                        }
                         let lists = [
                             &d.left_splashes,
                             &d.down_splashes,
@@ -396,13 +405,20 @@ impl NoteStyleAssets {
             out.cover_offsets = cover_cfg.offsets;
             out.cover_pixel = cover_cfg.is_pixel;
             if let Some(d) = &cover_cfg.data {
+                out.cover_enabled = d.enabled;
                 if d.enabled {
+                    let shared_key = cover_cfg.asset_path.as_deref().filter(|s| !s.is_empty());
                     let dirs = [&d.left, &d.down, &d.up, &d.right];
                     for (i, dir_opt) in dirs.into_iter().enumerate() {
                         let Some(dir_cfg) = dir_opt.as_ref() else {
                             continue;
                         };
-                        let Some(key) = dir_cfg.asset_path.as_deref() else {
+                        let Some(key) = dir_cfg
+                            .asset_path
+                            .as_deref()
+                            .filter(|s| !s.is_empty())
+                            .or(shared_key)
+                        else {
                             continue;
                         };
                         if let Some(sparrow) = load_sparrow_sheet(assets, gpu, key) {

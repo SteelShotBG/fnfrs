@@ -16,7 +16,7 @@ use fnfrs_core::schema::stage::{StageDataCharacter, TextureAtlasData};
 use fnfrs_render::{
     AnimateAtlas, AtlasFrame, BlendMode, EvaluatedPart, FilterMode, GpuContext, PackerAtlas,
     SparrowAtlas, SpriteBatcher, SpriteInstance, TextureHandle, SPRITE_FLAG_FLIP_X,
-    SPRITE_FLAG_FLIP_Y, SPRITE_FLAG_ROTATED_90_CW,
+    SPRITE_FLAG_FLIP_Y, SPRITE_FLAG_ROTATED_90_CCW, SPRITE_FLAG_ROTATED_90_CW,
 };
 
 use crate::input::NoteDirection;
@@ -280,7 +280,9 @@ impl AnimBank {
     pub(crate) fn finalize_links(&mut self) {
         self.anim_index.clear();
         for (idx, anim) in self.anims.iter().enumerate() {
-            self.anim_index.entry(anim.name.clone()).or_insert(idx);
+            // Match Haxe `Map.set`: later entries with the same animation name override earlier ones
+            // (e.g. `bf-holding-gf.json` defines a stale `singUP` before the real `BF NOTE UP0`).
+            self.anim_index.insert(anim.name.clone(), idx);
         }
 
         let mut stack_buf = [0u8; 128];
@@ -536,6 +538,7 @@ pub(crate) struct AtlasDrawParams {
     pub alpha: f32,
     pub blend: BlendMode,
     pub is_pixel: bool,
+    pub ref_unscaled_size: Option<[f32; 2]>,
 }
 
 #[inline]
@@ -582,10 +585,23 @@ pub(crate) fn draw_atlas_frame(
         flip_y,
     );
 
-    let untrimmed_x =
-        params.pos[0] - (params.anim_offsets[0] - params.global_offsets[0]) * params.scale[0];
-    let untrimmed_y =
-        params.pos[1] - (params.anim_offsets[1] - params.global_offsets[1]) * params.scale[1];
+    // HaxeFlixel scales frames around `src * 0.5` while `offset` stays locked from `updateHitbox()`
+    // on `ref_unscaled_size` (`idle`). Compensate when `scale != 1.0` and frame dimensions vary.
+    let origin_scale_comp = if let Some(ref_sz) = params.ref_unscaled_size {
+        [
+            0.5 * (ref_sz[0] - src[0]) * (params.scale[0] - 1.0),
+            0.5 * (ref_sz[1] - src[1]) * (params.scale[1] - 1.0),
+        ]
+    } else {
+        [0.0, 0.0]
+    };
+
+    let untrimmed_x = params.pos[0]
+        - (params.anim_offsets[0] - params.global_offsets[0]) * params.scale[0]
+        + origin_scale_comp[0];
+    let untrimmed_y = params.pos[1]
+        - (params.anim_offsets[1] - params.global_offsets[1]) * params.scale[1]
+        + origin_scale_comp[1];
 
     let world_x = untrimmed_x + trim[0] * params.scale[0];
     let world_y = untrimmed_y + trim[1] * params.scale[1];
@@ -743,7 +759,7 @@ pub(crate) fn draw_animate_parts(
 
         let mut flags = 0u32;
         if part.rotated {
-            flags |= SPRITE_FLAG_ROTATED_90_CW;
+            flags |= SPRITE_FLAG_ROTATED_90_CCW;
         }
         if part_flip_x {
             flags |= SPRITE_FLAG_FLIP_X;
@@ -1927,6 +1943,7 @@ impl BaseCharacter {
             alpha: self.alpha,
             blend: BlendMode::Normal,
             is_pixel: self.is_pixel,
+            ref_unscaled_size: Some(self.ref_unscaled_size),
         };
         self.bank.draw_current(batcher, &params);
     }

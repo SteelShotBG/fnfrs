@@ -459,10 +459,16 @@ fn compile_timeline(
         for raw_kf in &raw_layer.frames {
             if let Some(ref mut labels) = labels_out {
                 if let Some(name) = raw_kf.name.as_deref().filter(|s| !s.is_empty()) {
-                    labels.entry(name.to_owned()).or_insert(LabelSpan {
+                    let span = LabelSpan {
                         start: raw_kf.index,
                         duration: raw_kf.duration,
-                    });
+                    };
+                    labels.entry(name.to_owned()).or_insert(span);
+                    // Some V-Slice Animate files have trailing whitespace in labels (e.g. "up ", "down ").
+                    let trimmed = name.trim();
+                    if trimmed != name && !trimmed.is_empty() {
+                        labels.entry(trimmed.to_owned()).or_insert(span);
+                    }
                 }
             }
 

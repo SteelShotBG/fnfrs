@@ -597,6 +597,7 @@ impl StageProp {
                     alpha: self.alpha,
                     blend: self.blend,
                     is_pixel: self.is_pixel,
+                    ref_unscaled_size: None,
                 };
                 bop.bank.draw_current(batcher, &params);
             }

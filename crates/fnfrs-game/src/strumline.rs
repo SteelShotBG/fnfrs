@@ -1155,6 +1155,9 @@ impl Strumline {
                 }
             }
 
+            if note_assets.is_some_and(|na| !na.cover_enabled) {
+                continue;
+            }
             let base = StrumlineVisualStyle::lane_color(cover.direction);
             let size = STRUMLINE_SIZE * 0.9;
             let pad = (STRUMLINE_SIZE - size) * 0.5;
@@ -1181,7 +1184,13 @@ impl Strumline {
                         let var_frames = &variants[splash.variant % variants.len()];
                         if let Some(frame) = var_frames.get(splash.frame_index) {
                             let src = frame.source_size();
-                            let hb = [src[0] * na.splash_scale, src[1] * na.splash_scale];
+                            let scaled = [src[0] * na.splash_scale, src[1] * na.splash_scale];
+                            // NoteSplash overwrites `offset.set(width * 0.3, height * 0.3)` after
+                            // `updateHitbox()`, while FlxSprite keeps scaling around `src * 0.5`.
+                            let scale_origin_shift = [
+                                src[0] * 0.5 * (na.splash_scale - 1.0),
+                                src[1] * 0.5 * (na.splash_scale - 1.0),
+                            ];
                             let params = SparrowDrawParams {
                                 texture: tex,
                                 tex_size,
@@ -1193,8 +1202,11 @@ impl Strumline {
                                         + na.splash_offsets[1] * na.splash_scale,
                                 ],
                                 scale: na.splash_scale,
-                                hitbox_size: hb,
-                                extra_offset: [hb[0] * 0.3, hb[1] * 0.3],
+                                hitbox_size: scaled,
+                                extra_offset: [
+                                    na.splash_hitbox[0] * 0.3 + scale_origin_shift[0],
+                                    na.splash_hitbox[1] * 0.3 + scale_origin_shift[1],
+                                ],
                                 color: [1.0, 1.0, 1.0, na.splash_alpha],
                                 hsv_shift: [0.0; 3],
                                 blend: na.splash_blend,

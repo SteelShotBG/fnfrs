@@ -20,6 +20,7 @@ const FLAG_ROTATED_90_CW: u32 = 1u;
 const FLAG_FLIP_X: u32 = 2u;
 const FLAG_FLIP_Y: u32 = 4u;
 const FLAG_PIXEL_SNAP: u32 = 8u;
+const FLAG_ROTATED_90_CCW: u32 = 16u;
 
 struct SpriteInstanceInput {
     @location(0) pos: vec2<f32>,
@@ -81,6 +82,9 @@ fn vs_main(
     if (inst.flags & FLAG_ROTATED_90_CW) != 0u {
         // Sparrow packs rotated subtextures 90 deg CCW in the atlas; rotate +90 deg CW to restore.
         local_uv = vec2<f32>(flipped.y, 1.0 - flipped.x);
+    } else if (inst.flags & FLAG_ROTATED_90_CCW) != 0u {
+        // Adobe Animate spritemaps pack rotated subtextures 90 deg CW; rotate -90 deg CCW to restore.
+        local_uv = vec2<f32>(1.0 - flipped.y, flipped.x);
     }
 
     let uv = mix(inst.uv_rect.xy, inst.uv_rect.zw, local_uv);
