@@ -1563,11 +1563,9 @@ fn render_app_frame(
         .overlay_sprite_batcher
         .prepare(&state.gpu.device, &state.gpu.queue);
 
-    let clear_color = if gp.scene.game_over.phase == GameOverPhase::Inactive
-        && gp.scene.stage.is_some()
+    let clear_color = if gp.scene.stage.is_some()
+        || gp.scene.game_over.phase != GameOverPhase::Inactive
     {
-        wgpu::Color::BLACK
-    } else if gp.scene.game_over.phase != GameOverPhase::Inactive {
         wgpu::Color::BLACK
     } else {
         wgpu::Color {
@@ -2140,6 +2138,7 @@ fn load_song_chart(
     }
 }
 
+#[allow(clippy::type_complexity)]
 fn register_all_sfx(
     assets: &AssetLocator,
     engine: &mut AudioEngine,
