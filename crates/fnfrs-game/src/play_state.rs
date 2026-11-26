@@ -8,9 +8,9 @@ use std::time::Instant;
 use fnfrs_audio::{AudioCommand, AudioEngine, TrackKind};
 use fnfrs_core::conductor::{Conductor, ConductorEvents};
 use fnfrs_core::constants::{
-    HEALTH_HOLD_BONUS_PER_SECOND, HEALTH_MAX, HEALTH_MIN, HEALTH_MISS_PENALTY, HEALTH_STARTING,
-    SCORE_GHOST_MISS_PENALTY, SCORE_HOLD_BONUS_PER_SECOND, STRUMLINE_SIZE, STRUMLINE_X_OFFSET,
-    STRUMLINE_Y_OFFSET, VIRTUAL_HEIGHT, VIRTUAL_WIDTH,
+    COUNTDOWN_VOLUME, HEALTH_HOLD_BONUS_PER_SECOND, HEALTH_MAX, HEALTH_MIN, HEALTH_MISS_PENALTY,
+    HEALTH_STARTING, MS_PER_SEC, SCORE_GHOST_MISS_PENALTY, SCORE_HOLD_BONUS_PER_SECOND,
+    STRUMLINE_SIZE, STRUMLINE_X_OFFSET, STRUMLINE_Y_OFFSET, VIRTUAL_HEIGHT, VIRTUAL_WIDTH,
 };
 use fnfrs_core::pool::PoolHandle;
 use fnfrs_core::schema::song::{SongChartData, SongMetadata, SongNoteData};
@@ -18,11 +18,26 @@ use fnfrs_core::scoring::{
     format_score_into, get_miss_score, judge_note, score_note, Judgement, ScoreTallies,
     ScoringSystem,
 };
-use fnfrs_render::{BitmapFont, MeshBatcher, SpriteBatcher, TextAlign, TextStyle, TextureHandle};
+use fnfrs_render::{
+    BitmapFont, BlendMode, FilterMode, MeshBatcher, SpriteBatcher, SpriteInstance, TextAlign,
+    TextStyle, TextureHandle,
+};
 
+use crate::camera::{CameraRig, FlxEase, DEFAULT_STAGE_ZOOM};
+use crate::character::BaseCharacter;
+use crate::countdown::{CountdownAssets, CountdownController, CountdownSfx, CountdownStep};
+use crate::events::{
+    AnimationTarget, CameraFocusTarget, FocusCameraEase, GameEventAction, QueuedSongEvent,
+    ScrollSpeedTarget, SongEventQueue, ZoomMode,
+};
+use crate::hud::{
+    GameOverEvents, GameOverPhase, GameOverState, HealthBarLayout, HealthIcon, PauseMenuState,
+    ResultsSummaryState,
+};
 use crate::input::{compute_note_diff_ms, InputQueue, NoteDirection};
 use crate::note_style::NoteStyleAssets;
 use crate::popup::PopUpPool;
+use crate::stage::Stage;
 use crate::strumline::{Strumline, StrumlineVisualStyle};
 use crate::sustain::compute_hold_drop_penalty;
 
@@ -72,6 +87,7 @@ pub struct PlayStepEvents {
     pub last_note_diff_ms: Option<f64>,
     pub missed_note: bool,
     pub ghost_missed: bool,
+    pub missed_dir: Option<NoteDirection>,
     pub died: bool,
     pub player_hit_dir: Option<NoteDirection>,
     pub opponent_hit_dir: Option<NoteDirection>,
@@ -371,12 +387,17 @@ impl PlaySession {
             .take(player_events.newly_missed_len)
             .flatten()
         {
+            let mut miss_dir = None;
             if let Some(note) = self.player_strumline.notes.get_mut(*miss_h) {
                 note.handled_miss = true;
+                miss_dir = Some(note.direction);
             }
             if !self.config.is_botplay {
                 self.on_note_miss(audio.as_deref_mut());
                 step_events.missed_note = true;
+                if miss_dir.is_some() {
+                    step_events.missed_dir = miss_dir;
+                }
             }
         }
 
@@ -397,6 +418,7 @@ impl PlaySession {
         {
             if let Some(hold) = self.player_strumline.holds.get_mut(*drop_h) {
                 hold.handled_miss = true;
+                let hold_dir = hold.direction;
                 if !self.config.is_botplay && hold.scoreable {
                     let penalty = compute_hold_drop_penalty(hold.sustain_ms, hold.hit_note);
                     if penalty.should_penalize {
@@ -408,6 +430,7 @@ impl PlaySession {
                         );
                         self.play_miss_audio(audio.as_deref_mut(), 0.55);
                         step_events.missed_note = true;
+                        step_events.missed_dir = Some(hold_dir);
                     }
                 }
             }
@@ -472,6 +495,7 @@ impl PlaySession {
                     let _ = any_notes_in_range;
                     self.ghost_note_miss(audio.as_deref_mut());
                     step_events.ghost_missed = true;
+                    step_events.missed_dir = Some(ev.direction);
                 }
                 self.player_strumline.play_press(ev.direction);
                 continue;
@@ -808,6 +832,822 @@ impl PlaySession {
             [0.0, 0.0, 0.0, 1.0],
         );
     }
+
+    /// Returns `true` if the player currently has an active, unmissed sustain trail held.
+    #[must_use]
+    pub fn is_player_holding_sustain(&self) -> bool {
+        self.player_strumline
+            .holds
+            .iter_alive()
+            .any(|(_, h)| h.hit_note && !h.missed_note && h.sustain_ms > 0.0)
+    }
+
+    /// Returns `true` if any player lane key is currently held.
+    #[must_use]
+    pub fn is_player_holding_key(&self) -> bool {
+        NoteDirection::ALL
+            .iter()
+            .any(|&dir| self.player_strumline.is_key_held(dir))
+    }
+
+    /// Returns `true` if the opponent currently has an active sustain trail held.
+    #[must_use]
+    pub fn is_opponent_holding_sustain(&self) -> bool {
+        self.opponent_strumline
+            .holds
+            .iter_alive()
+            .any(|(_, h)| h.hit_note && !h.missed_note && h.sustain_ms > 0.0)
+    }
+}
+
+/// Initialization parameters for [`PlayScene`].
+#[derive(Debug, Clone)]
+pub struct PlaySceneConfig {
+    pub song_name: String,
+    pub difficulty: String,
+    pub start_countdown: bool,
+    pub song_duration_ms: Option<f64>,
+    pub death_count: u32,
+}
+
+impl Default for PlaySceneConfig {
+    fn default() -> Self {
+        Self {
+            song_name: "Unknown".to_owned(),
+            difficulty: "normal".to_owned(),
+            start_countdown: true,
+            song_duration_ms: None,
+            death_count: 0,
+        }
+    }
+}
+
+/// Per-frame events emitted by [`PlayScene::update`].
+#[derive(Debug, Clone, Copy, Default)]
+pub struct PlaySceneStepEvents {
+    pub gameplay: PlayStepEvents,
+    pub countdown_step: Option<CountdownStep>,
+    pub countdown_sfx: Option<CountdownSfx>,
+    pub countdown_finished_now: bool,
+    pub game_over_events: GameOverEvents,
+    pub song_finished_now: bool,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct ScrollSpeedTween {
+    active: bool,
+    start: f64,
+    target: f64,
+    elapsed_s: f32,
+    duration_s: f32,
+    ease: FlxEase,
+}
+
+impl ScrollSpeedTween {
+    fn start(&mut self, current: f64, target: f64, duration_s: f32, ease: FlxEase) -> Option<f64> {
+        if duration_s <= 0.0 || ease == FlxEase::Instant {
+            self.active = false;
+            return Some(target);
+        }
+        self.active = true;
+        self.start = current;
+        self.target = target;
+        self.elapsed_s = 0.0;
+        self.duration_s = duration_s;
+        self.ease = ease;
+        None
+    }
+
+    fn update(&mut self, elapsed_s: f32) -> Option<f64> {
+        if !self.active {
+            return None;
+        }
+        self.elapsed_s += elapsed_s.max(0.0);
+        let raw_t = if self.duration_s > 0.0 {
+            (self.elapsed_s / self.duration_s).clamp(0.0, 1.0)
+        } else {
+            1.0
+        };
+        let eased = f64::from(self.ease.eval(raw_t));
+        let value = self.start + (self.target - self.start) * eased;
+        if raw_t >= 1.0 {
+            self.active = false;
+            return Some(self.target);
+        }
+        Some(value)
+    }
+}
+
+/// Complete V-Slice gameplay scene coordinating [`PlaySession`], [`Stage`],
+/// [`BaseCharacter`]s, [`CameraRig`], [`SongEventQueue`], [`HealthIcon`]s,
+/// [`CountdownController`], [`PauseMenuState`], [`GameOverState`], and
+/// [`ResultsSummaryState`] with **zero per-frame heap allocations**.
+#[derive(Debug)]
+pub struct PlayScene {
+    pub session: PlaySession,
+    pub stage: Option<Stage>,
+    pub bf: Option<BaseCharacter>,
+    pub dad: Option<BaseCharacter>,
+    pub gf: Option<BaseCharacter>,
+    pub camera_rig: CameraRig,
+    pub event_queue: SongEventQueue,
+    pub icon_p1: HealthIcon,
+    pub icon_p2: HealthIcon,
+    pub countdown: CountdownController,
+    pub countdown_assets: Option<CountdownAssets>,
+    pub pause_menu: PauseMenuState,
+    pub game_over: GameOverState,
+    pub results: ResultsSummaryState,
+    pub scene_config: PlaySceneConfig,
+
+    base_scroll_speed: f64,
+    health_bar_size: [f32; 2],
+    player_scroll_tween: ScrollSpeedTween,
+    opponent_scroll_tween: ScrollSpeedTween,
+}
+
+impl PlayScene {
+    /// Builds a [`PlayScene`], places characters on `stage`, initializes cameras,
+    /// and optionally starts the 4-beat pre-roll countdown.
+    #[allow(clippy::too_many_arguments)]
+    #[must_use]
+    pub fn new(
+        session: PlaySession,
+        mut stage: Option<Stage>,
+        mut bf: Option<BaseCharacter>,
+        mut dad: Option<BaseCharacter>,
+        mut gf: Option<BaseCharacter>,
+        event_queue: SongEventQueue,
+        icon_p1: HealthIcon,
+        icon_p2: HealthIcon,
+        countdown_assets: Option<CountdownAssets>,
+        scene_config: PlaySceneConfig,
+    ) -> Self {
+        if let Some(st) = &mut stage {
+            st.reset_stage(bf.as_mut(), dad.as_mut(), gf.as_mut());
+        }
+        if let Some(player) = &mut bf {
+            player.is_dead = false;
+        }
+
+        let stage_zoom = stage.as_ref().map_or(DEFAULT_STAGE_ZOOM, |s| s.camera_zoom);
+        let mut camera_rig = CameraRig::new(stage_zoom);
+        let initial_focus = initial_camera_focus(bf.as_ref(), dad.as_ref(), gf.as_ref());
+        camera_rig.cam_game.snap_to(initial_focus[0], initial_focus[1]);
+
+        let pause_menu = PauseMenuState::new(&scene_config.song_name, &scene_config.difficulty);
+        let mut game_over = GameOverState::new();
+        game_over.death_count = scene_config.death_count;
+        let bf_is_pixel = bf.as_ref().is_some_and(|c| c.is_pixel);
+        game_over.set_suffix(if bf_is_pixel { "-pixel" } else { "" }, bf_is_pixel);
+
+        let beat_ms = session.conductor.beat_length_ms();
+        let mut countdown = CountdownController::new(beat_ms);
+        if scene_config.start_countdown {
+            countdown.start_at(beat_ms, session.config.start_timestamp_ms);
+        } else {
+            countdown.skip();
+        }
+
+        let base_scroll_speed = session.config.scroll_speed.max(0.1);
+
+        Self {
+            session,
+            stage,
+            bf,
+            dad,
+            gf,
+            camera_rig,
+            event_queue,
+            icon_p1,
+            icon_p2,
+            countdown,
+            countdown_assets,
+            pause_menu,
+            game_over,
+            results: ResultsSummaryState::new(),
+            scene_config,
+            base_scroll_speed,
+            health_bar_size: [601.0, 19.0],
+            player_scroll_tween: ScrollSpeedTween::default(),
+            opponent_scroll_tween: ScrollSpeedTween::default(),
+        }
+    }
+
+    /// Updates cached health bar dimensions used to anchor [`HealthIcon`]s.
+    pub fn set_health_bar_size(&mut self, width: f32, height: f32) {
+        self.health_bar_size = [width.max(10.0), height.max(10.0)];
+    }
+
+    /// Resets scene state for song restart or difficulty reload without reallocating pools.
+    pub fn restart(
+        &mut self,
+        new_session: PlaySession,
+        song_name: &str,
+        difficulty: &str,
+        song_duration_ms: Option<f64>,
+        reset_death_count: bool,
+    ) {
+        self.session = new_session;
+        self.scene_config.song_name.clear();
+        self.scene_config.song_name.push_str(song_name);
+        self.scene_config.difficulty.clear();
+        self.scene_config.difficulty.push_str(difficulty);
+        self.scene_config.song_duration_ms = song_duration_ms;
+
+        self.base_scroll_speed = self.session.config.scroll_speed.max(0.1);
+        self.player_scroll_tween = ScrollSpeedTween::default();
+        self.opponent_scroll_tween = ScrollSpeedTween::default();
+        self.event_queue.reset_to_time_ms(0.0);
+
+        if let Some(st) = &mut self.stage {
+            st.reset_stage(self.bf.as_mut(), self.dad.as_mut(), self.gf.as_mut());
+        } else {
+            if let Some(c) = &mut self.bf {
+                c.reset_character(true);
+            }
+            if let Some(c) = &mut self.dad {
+                c.reset_character(true);
+            }
+            if let Some(c) = &mut self.gf {
+                c.reset_character(true);
+            }
+        }
+        if let Some(player) = &mut self.bf {
+            player.is_dead = false;
+        }
+
+        self.camera_rig.reset();
+        let focus = initial_camera_focus(self.bf.as_ref(), self.dad.as_ref(), self.gf.as_ref());
+        self.camera_rig.cam_game.snap_to(focus[0], focus[1]);
+
+        self.pause_menu.set_song_info(song_name, difficulty);
+        self.pause_menu.close();
+        self.game_over.reset();
+        if reset_death_count {
+            self.game_over.death_count = 0;
+        }
+        self.results.hide();
+
+        let beat_ms = self.session.conductor.beat_length_ms();
+        if self.scene_config.start_countdown {
+            self.countdown
+                .start_at(beat_ms, self.session.config.start_timestamp_ms);
+        } else {
+            self.countdown.skip();
+        }
+    }
+
+    /// Advances gameplay, countdown, song events, characters, stage, camera rig,
+    /// and health icons for one frame with **zero heap allocations**.
+    pub fn update(
+        &mut self,
+        raw_song_pos_ms: f64,
+        elapsed_s: f32,
+        frame_timestamp: Instant,
+        inputs: &mut InputQueue,
+        mut audio: Option<&mut AudioEngine>,
+        style: &StrumlineVisualStyle,
+    ) -> PlaySceneStepEvents {
+        let mut out = PlaySceneStepEvents::default();
+
+        if self.game_over.phase != GameOverPhase::Inactive {
+            inputs.clear();
+            if let Some(bf) = &mut self.bf {
+                bf.update(elapsed_s, self.session.conductor.beat_length_ms(), false);
+            }
+            return out;
+        }
+
+        if self.pause_menu.is_open || self.results.is_active || self.session.is_paused {
+            inputs.clear();
+            return out;
+        }
+
+        let effective_song_pos_ms = if self.countdown.active {
+            let is_pixel = style.is_pixel
+                || self
+                    .countdown_assets
+                    .as_ref()
+                    .is_some_and(|a| a.default_pixel);
+            let tick = self.countdown.update(elapsed_s, is_pixel);
+            out.countdown_step = tick.entered_step;
+            out.countdown_sfx = tick.sfx;
+            out.countdown_finished_now = tick.finished_now;
+
+            if let Some(sfx) = tick.sfx {
+                if let Some(slot) = self
+                    .countdown_assets
+                    .as_ref()
+                    .and_then(|a| a.sfx_slots[sfx.as_index()])
+                {
+                    if let Some(engine) = audio.as_deref_mut() {
+                        let _ = engine.send(AudioCommand::PlaySfx {
+                            slot,
+                            gain: COUNTDOWN_VOLUME,
+                        });
+                    }
+                }
+            }
+
+            if let Some(step) = tick.entered_step {
+                let beat_idx = match step {
+                    CountdownStep::Three => Some(0),
+                    CountdownStep::Two => Some(1),
+                    CountdownStep::One => Some(2),
+                    CountdownStep::Go => Some(3),
+                    CountdownStep::Before | CountdownStep::Done => None,
+                };
+                if let Some(beat) = beat_idx {
+                    if let Some(st) = &mut self.stage {
+                        st.on_beat_hit(beat);
+                    }
+                    if let Some(c) = &mut self.bf {
+                        c.dance(true);
+                    }
+                    if let Some(c) = &mut self.dad {
+                        c.dance(true);
+                    }
+                    if let Some(c) = &mut self.gf {
+                        c.dance(true);
+                    }
+                    self.icon_p1.bop();
+                    self.icon_p2.bop();
+                }
+            }
+
+            if tick.finished_now {
+                if let Some(engine) = audio.as_deref_mut() {
+                    let _ = engine.play();
+                }
+                self.session.config.start_timestamp_ms
+            } else {
+                self.countdown.song_time_ms
+            }
+        } else {
+            raw_song_pos_ms
+        };
+
+        let gameplay = self.session.update(
+            effective_song_pos_ms,
+            elapsed_s,
+            frame_timestamp,
+            inputs,
+            audio,
+            style,
+        );
+        out.gameplay = gameplay;
+
+        if gameplay.died {
+            self.session.is_paused = true;
+            if let Some(bf) = &mut self.bf {
+                bf.is_dead = true;
+                bf.play_animation("firstDeath", true, true);
+            }
+            out.game_over_events = self.game_over.trigger_death();
+            return out;
+        }
+
+        let song_pos = self.session.conductor.song_position_ms;
+        if !self.countdown.active || song_pos >= 0.0 {
+            let step_len_ms = self.session.conductor.step_length_ms();
+            let base_scroll = self.base_scroll_speed;
+            let camera_rig = &mut self.camera_rig;
+            let bf = &mut self.bf;
+            let dad = &mut self.dad;
+            let gf = &mut self.gf;
+            let stage = &mut self.stage;
+            let player_strumline = &mut self.session.player_strumline;
+            let opponent_strumline = &mut self.session.opponent_strumline;
+            let player_tween = &mut self.player_scroll_tween;
+            let opponent_tween = &mut self.opponent_scroll_tween;
+
+            self.event_queue.update(song_pos, |ev| {
+                apply_song_event(
+                    ev,
+                    step_len_ms,
+                    base_scroll,
+                    camera_rig,
+                    bf.as_mut(),
+                    dad.as_mut(),
+                    gf.as_mut(),
+                    stage.as_mut(),
+                    player_strumline,
+                    opponent_strumline,
+                    player_tween,
+                    opponent_tween,
+                );
+            });
+        }
+
+        if let Some(speed) = self.player_scroll_tween.update(elapsed_s) {
+            self.session.player_strumline.scroll_speed = speed.max(0.1);
+        }
+        if let Some(speed) = self.opponent_scroll_tween.update(elapsed_s) {
+            self.session.opponent_strumline.scroll_speed = speed.max(0.1);
+        }
+
+        if let Some(dir) = gameplay.player_hit_dir {
+            if let Some(bf) = &mut self.bf {
+                bf.play_sing_animation(dir, false, "");
+            }
+        } else if gameplay.missed_note || gameplay.ghost_missed {
+            if let Some(dir) = gameplay.missed_dir {
+                if let Some(bf) = &mut self.bf {
+                    bf.play_sing_animation(dir, true, "");
+                }
+            }
+        }
+
+        if let Some(dir) = gameplay.opponent_hit_dir {
+            if let Some(dad) = &mut self.dad {
+                dad.play_sing_animation(dir, false, "");
+            }
+        }
+
+        let player_holding_sustain = self.session.is_player_holding_sustain();
+        let is_holding_player = player_holding_sustain || self.session.is_player_holding_key();
+        if player_holding_sustain {
+            if let Some(bf) = &mut self.bf {
+                bf.reset_hold_timer();
+            }
+        }
+        if self.session.is_opponent_holding_sustain() {
+            if let Some(dad) = &mut self.dad {
+                dad.reset_hold_timer();
+            }
+        }
+
+        if !self.countdown.active && song_pos >= 0.0 {
+            let cur_step = self.session.conductor.current_step;
+            let cur_beat = self.session.conductor.current_beat;
+
+            if gameplay.conductor.step_hit && cur_step >= 0 {
+                self.camera_rig.on_step_hit(cur_step);
+                if let Some(st) = &mut self.stage {
+                    st.on_step_hit(cur_step);
+                }
+                if let Some(bf) = &mut self.bf {
+                    bf.on_step_hit(cur_step, is_holding_player);
+                }
+                if let Some(dad) = &mut self.dad {
+                    dad.on_step_hit(cur_step, false);
+                }
+                if let Some(gf) = &mut self.gf {
+                    gf.on_step_hit(cur_step, false);
+                }
+                self.icon_p1.on_step_hit(cur_step);
+                self.icon_p2.on_step_hit(cur_step);
+            }
+
+            if gameplay.conductor.beat_hit && cur_beat >= 0 {
+                if let Some(st) = &mut self.stage {
+                    st.on_beat_hit(cur_beat);
+                }
+                if let Some(bf) = &mut self.bf {
+                    bf.on_beat_hit(cur_beat, is_holding_player);
+                }
+                if let Some(dad) = &mut self.dad {
+                    dad.on_beat_hit(cur_beat, false);
+                }
+                if let Some(gf) = &mut self.gf {
+                    gf.on_beat_hit(cur_beat, false);
+                }
+            }
+        }
+
+        let beat_len_ms = self.session.conductor.beat_length_ms();
+        if let Some(st) = &mut self.stage {
+            st.update(elapsed_s);
+        }
+        if let Some(bf) = &mut self.bf {
+            bf.update(elapsed_s, beat_len_ms, is_holding_player);
+        }
+        if let Some(dad) = &mut self.dad {
+            dad.update(elapsed_s, beat_len_ms, false);
+        }
+        if let Some(gf) = &mut self.gf {
+            gf.update(elapsed_s, beat_len_ms, false);
+        }
+        self.camera_rig.update(elapsed_s);
+
+        let bar_layout = HealthBarLayout::compute(
+            self.health_bar_size[0],
+            self.health_bar_size[1],
+            self.session.config.is_downscroll,
+            self.session.health_lerp,
+        );
+        self.icon_p1
+            .update(elapsed_s, self.session.health_lerp, &bar_layout);
+        self.icon_p2
+            .update(elapsed_s, self.session.health_lerp, &bar_layout);
+
+        if !self.countdown.active && !self.session.is_player_dying && !self.results.is_active {
+            if let Some(end_ms) = self.scene_config.song_duration_ms {
+                if song_pos >= end_ms {
+                    self.results.show(
+                        &self.scene_config.song_name,
+                        &self.scene_config.difficulty,
+                        self.session.score(),
+                        self.session.tallies,
+                        false,
+                    );
+                    out.song_finished_now = true;
+                }
+            }
+        }
+
+        out
+    }
+
+    /// Queues world (`stage_sprites`), HUD (`bg_sprites`, `mesh_batcher`, `fg_sprites`),
+    /// and overlay (`overlay_sprites`) geometry with **zero heap allocations**.
+    #[allow(clippy::too_many_arguments)]
+    pub fn draw(
+        &self,
+        stage_sprites: &mut SpriteBatcher,
+        bg_sprites: &mut SpriteBatcher,
+        fg_sprites: &mut SpriteBatcher,
+        mesh_batcher: &mut MeshBatcher,
+        overlay_sprites: &mut SpriteBatcher,
+        style: &StrumlineVisualStyle,
+        note_assets: Option<&NoteStyleAssets>,
+        font: &BitmapFont,
+        font_tex: TextureHandle,
+    ) {
+        let cam_pos = [
+            self.camera_rig.cam_game.scroll[0] - self.camera_rig.cam_game.shake_offset[0],
+            self.camera_rig.cam_game.scroll[1] - self.camera_rig.cam_game.shake_offset[1],
+        ];
+        let cam_zoom = self.camera_rig.cam_game.effective_zoom();
+        let hud_zoom = self.camera_rig.cam_hud.effective_zoom();
+
+        self.draw_world_layer(stage_sprites, cam_pos, cam_zoom, hud_zoom);
+
+        self.session.draw(
+            bg_sprites,
+            fg_sprites,
+            mesh_batcher,
+            style,
+            note_assets,
+            font,
+            font_tex,
+        );
+        self.icon_p2.draw(fg_sprites, style.white_texture);
+        self.icon_p1.draw(fg_sprites, style.white_texture);
+        self.countdown
+            .draw(fg_sprites, self.countdown_assets.as_ref());
+
+        if let Some(flash) = self.camera_rig.cam_game.flash_overlay() {
+            overlay_sprites.push(
+                style.white_texture,
+                BlendMode::Normal,
+                FilterMode::Nearest,
+                SpriteInstance::new([0.0, 0.0], [VIRTUAL_WIDTH, VIRTUAL_HEIGHT])
+                    .with_color(flash),
+            );
+        }
+        if let Some(flash) = self.camera_rig.cam_hud.flash_overlay() {
+            overlay_sprites.push(
+                style.white_texture,
+                BlendMode::Normal,
+                FilterMode::Nearest,
+                SpriteInstance::new([0.0, 0.0], [VIRTUAL_WIDTH, VIRTUAL_HEIGHT])
+                    .with_color(flash),
+            );
+        }
+
+        self.pause_menu
+            .draw(overlay_sprites, style.white_texture, font, font_tex);
+        self.game_over
+            .draw(overlay_sprites, style.white_texture, font, font_tex);
+        self.results
+            .draw(overlay_sprites, style.white_texture, font, font_tex);
+    }
+
+    fn draw_world_layer(
+        &self,
+        stage_sprites: &mut SpriteBatcher,
+        cam_pos: [f32; 2],
+        cam_zoom: f32,
+        hud_zoom: f32,
+    ) {
+        match (self.stage.as_ref(), self.gf.as_ref(), self.dad.as_ref(), self.bf.as_ref()) {
+            (Some(st), Some(g), Some(d), Some(b)) => {
+                st.draw_with_characters(stage_sprites, cam_pos, cam_zoom, hud_zoom, &[g, d, b]);
+            }
+            (Some(st), Some(g), Some(d), None) => {
+                st.draw_with_characters(stage_sprites, cam_pos, cam_zoom, hud_zoom, &[g, d]);
+            }
+            (Some(st), Some(g), None, Some(b)) => {
+                st.draw_with_characters(stage_sprites, cam_pos, cam_zoom, hud_zoom, &[g, b]);
+            }
+            (Some(st), None, Some(d), Some(b)) => {
+                st.draw_with_characters(stage_sprites, cam_pos, cam_zoom, hud_zoom, &[d, b]);
+            }
+            (Some(st), Some(g), None, None) => {
+                st.draw_with_characters(stage_sprites, cam_pos, cam_zoom, hud_zoom, &[g]);
+            }
+            (Some(st), None, Some(d), None) => {
+                st.draw_with_characters(stage_sprites, cam_pos, cam_zoom, hud_zoom, &[d]);
+            }
+            (Some(st), None, None, Some(b)) => {
+                st.draw_with_characters(stage_sprites, cam_pos, cam_zoom, hud_zoom, &[b]);
+            }
+            (Some(st), None, None, None) => {
+                st.draw(stage_sprites, cam_pos, cam_zoom, hud_zoom);
+            }
+            (None, g, d, b) => {
+                draw_optional_chars_sorted(stage_sprites, cam_pos, cam_zoom, [g, d, b]);
+            }
+        }
+    }
+}
+
+fn draw_optional_chars_sorted(
+    stage_sprites: &mut SpriteBatcher,
+    cam_pos: [f32; 2],
+    cam_zoom: f32,
+    chars: [Option<&BaseCharacter>; 3],
+) {
+    let mut entries: [(i32, usize); 3] = [(i32::MAX, 0), (i32::MAX, 1), (i32::MAX, 2)];
+    let mut count = 0usize;
+    for (idx, ch_opt) in chars.iter().enumerate() {
+        if let Some(ch) = ch_opt {
+            entries[count] = (ch.z_index, idx);
+            count += 1;
+        }
+    }
+    for i in 1..count {
+        let key = entries[i];
+        let mut j = i;
+        while j > 0 && entries[j - 1].0 > key.0 {
+            entries[j] = entries[j - 1];
+            j -= 1;
+        }
+        entries[j] = key;
+    }
+    for &(_, idx) in entries.iter().take(count) {
+        if let Some(ch) = chars[idx] {
+            ch.draw(stage_sprites, cam_pos, cam_zoom);
+        }
+    }
+}
+
+fn initial_camera_focus(
+    bf: Option<&BaseCharacter>,
+    dad: Option<&BaseCharacter>,
+    gf: Option<&BaseCharacter>,
+) -> [f32; 2] {
+    dad.or(gf)
+        .or(bf)
+        .map_or([VIRTUAL_WIDTH * 0.5, VIRTUAL_HEIGHT * 0.5], BaseCharacter::get_camera_focus_point)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn apply_song_event(
+    ev: &QueuedSongEvent,
+    step_len_ms: f64,
+    base_scroll_speed: f64,
+    camera_rig: &mut CameraRig,
+    bf: Option<&mut BaseCharacter>,
+    dad: Option<&mut BaseCharacter>,
+    gf: Option<&mut BaseCharacter>,
+    stage: Option<&mut Stage>,
+    player_strumline: &mut Strumline,
+    opponent_strumline: &mut Strumline,
+    player_tween: &mut ScrollSpeedTween,
+    opponent_tween: &mut ScrollSpeedTween,
+) {
+    match &ev.action {
+        GameEventAction::FocusCamera {
+            target,
+            offset,
+            duration_steps,
+            ease,
+        } => {
+            let base = match target {
+                CameraFocusTarget::Position => [0.0, 0.0],
+                CameraFocusTarget::Player => bf.map_or(
+                    [VIRTUAL_WIDTH * 0.5, VIRTUAL_HEIGHT * 0.5],
+                    |c| c.get_camera_focus_point(),
+                ),
+                CameraFocusTarget::Opponent => dad.map_or(
+                    [VIRTUAL_WIDTH * 0.5, VIRTUAL_HEIGHT * 0.5],
+                    |c| c.get_camera_focus_point(),
+                ),
+                CameraFocusTarget::Girlfriend => gf.map_or(
+                    [VIRTUAL_WIDTH * 0.5, VIRTUAL_HEIGHT * 0.5],
+                    |c| c.get_camera_focus_point(),
+                ),
+                CameraFocusTarget::Unknown(_) => camera_rig.cam_game.target_follow,
+            };
+            let tx = base[0] + offset[0];
+            let ty = base[1] + offset[1];
+            match *ease {
+                FocusCameraEase::Classic => camera_rig.cam_game.set_target(tx, ty),
+                FocusCameraEase::Tween(flx) => camera_rig.cam_game.tween_to_steps(
+                    tx,
+                    ty,
+                    *duration_steps,
+                    step_len_ms,
+                    flx,
+                ),
+            }
+        }
+        GameEventAction::ZoomCamera {
+            zoom,
+            duration_steps,
+            mode,
+            ease,
+        } => {
+            let direct = matches!(mode, ZoomMode::Direct);
+            camera_rig.cam_game.tween_zoom_steps(
+                *zoom,
+                direct,
+                *duration_steps,
+                step_len_ms,
+                *ease,
+            );
+        }
+        GameEventAction::SetCameraBop {
+            rate_beats,
+            offset_beats,
+            intensity,
+        } => {
+            camera_rig.set_bop(*rate_beats, *offset_beats, *intensity);
+        }
+        GameEventAction::PlayAnimation {
+            target,
+            anim,
+            force,
+        } => match GameEventAction::resolve_animation_target(target) {
+            AnimationTarget::Boyfriend => {
+                if let Some(c) = bf {
+                    c.play_animation(anim, *force, false);
+                }
+            }
+            AnimationTarget::Dad => {
+                if let Some(c) = dad {
+                    c.play_animation(anim, *force, false);
+                }
+            }
+            AnimationTarget::Girlfriend => {
+                if let Some(c) = gf {
+                    c.play_animation(anim, *force, false);
+                }
+            }
+            AnimationTarget::Prop(prop_name) => {
+                if let Some(st) = stage {
+                    if let Some(prop) = st.get_named_prop_mut(prop_name) {
+                        if let Some(bop) = &mut prop.bopper {
+                            bop.play_animation(anim, *force);
+                        }
+                    }
+                }
+            }
+        },
+        GameEventAction::ScrollSpeed {
+            scroll,
+            duration_steps,
+            ease,
+            strumline,
+            absolute,
+        } => {
+            let target = if *absolute {
+                f64::from(*scroll)
+            } else {
+                base_scroll_speed * f64::from(*scroll)
+            }
+            .max(0.1);
+            let duration_s = ((f64::from(*duration_steps) * step_len_ms) / MS_PER_SEC) as f32;
+
+            if matches!(
+                strumline,
+                ScrollSpeedTarget::Both | ScrollSpeedTarget::Player
+            ) {
+                if let Some(immediate) =
+                    player_tween.start(player_strumline.scroll_speed, target, duration_s, *ease)
+                {
+                    player_strumline.scroll_speed = immediate;
+                }
+            }
+            if matches!(
+                strumline,
+                ScrollSpeedTarget::Both | ScrollSpeedTarget::Opponent
+            ) {
+                if let Some(immediate) = opponent_tween.start(
+                    opponent_strumline.scroll_speed,
+                    target,
+                    duration_s,
+                    *ease,
+                ) {
+                    opponent_strumline.scroll_speed = immediate;
+                }
+            }
+        }
+        GameEventAction::Custom { .. } => {}
+    }
 }
 
 #[cfg(test)]
@@ -815,9 +1655,61 @@ mod tests {
     use std::time::Duration;
 
     use fnfrs_core::constants::HIT_WINDOW_MS;
+    use fnfrs_core::schema::character::{AnimationData, CharacterData, CharacterRenderType};
+    use fnfrs_core::schema::song::SongEventData;
+    use fnfrs_core::schema::stage::{ScaleSpec, StageData, StageDataCharacters, StageDataProp};
     use winit::keyboard::KeyCode;
 
     use super::*;
+    use crate::character::CharacterKind;
+
+    fn make_anim(name: &str, looped: bool) -> AnimationData {
+        AnimationData {
+            name: name.to_owned(),
+            prefix: Some(name.to_owned()),
+            asset_path: None,
+            offsets: [0.0, 0.0],
+            looped,
+            flip_x: false,
+            flip_y: false,
+            frame_rate: 24,
+            frame_indices: Vec::new(),
+            anim_type: "framelabel".to_owned(),
+            render_type: String::new(),
+            atlas_settings: None,
+        }
+    }
+
+    fn make_test_character(id: &str, kind: CharacterKind) -> BaseCharacter {
+        let data = CharacterData {
+            version: "1.0.2".to_owned(),
+            name: id.to_owned(),
+            render_type: CharacterRenderType::Sparrow,
+            asset_path: format!("characters/{id}"),
+            scale: 1.0,
+            health_icon: None,
+            death: None,
+            offsets: [0.0, 0.0],
+            camera_offsets: [0.0, 0.0],
+            is_pixel: false,
+            dance_every: 1.0,
+            sing_time: 4.0,
+            animations: vec![
+                make_anim("idle", false),
+                make_anim("singLEFT", false),
+                make_anim("singDOWN", false),
+                make_anim("singUP", false),
+                make_anim("singRIGHT", false),
+                make_anim("singLEFTmiss", false),
+                make_anim("hey", false),
+            ],
+            starting_animation: "idle".to_owned(),
+            flip_x: false,
+            apply_stage_matrix: false,
+            atlas_settings: None,
+        };
+        BaseCharacter::new_synthetic(id, kind, [200.0, 300.0], data)
+    }
 
     #[test]
     fn play_session_hits_and_misses_within_pbot1_window() {
@@ -866,5 +1758,149 @@ mod tests {
         assert!(ev_miss.missed_note);
         assert_eq!(session.tallies.missed, 1);
         assert_eq!(session.tallies.combo, 0);
+    }
+
+    #[test]
+    fn play_scene_drives_countdown_events_camera_chars_and_icons() {
+        let player_notes = vec![SongNoteData {
+            time: 1000.0,
+            data: 0,
+            length: 0.0,
+            kind: None,
+            params: Vec::new(),
+        }];
+        let opponent_notes = vec![SongNoteData {
+            time: 500.0,
+            data: 6, // Up on opponent strumline
+            length: 0.0,
+            kind: None,
+            params: Vec::new(),
+        }];
+
+        let mut play_cfg = PlayConfig::default();
+        play_cfg.scroll_speed = 1.5;
+        let session =
+            PlaySession::from_raw_notes(120.0, &player_notes, &opponent_notes, play_cfg);
+
+        let mut stage_chars = StageDataCharacters::default();
+        stage_chars.bf.position = [950.0, 800.0];
+        stage_chars.bf.camera_offsets = [-100.0, -100.0];
+        stage_chars.dad.position = [250.0, 800.0];
+        stage_chars.dad.camera_offsets = [100.0, -100.0];
+
+        let stage_data = StageData {
+            version: "1.0.0".to_owned(),
+            name: "Test".to_owned(),
+            props: vec![StageDataProp {
+                name: Some("bg".to_owned()),
+                asset_path: "#112233".to_owned(),
+                position: [0.0, 0.0],
+                z_index: 10,
+                is_pixel: false,
+                flip_x: false,
+                flip_y: false,
+                scale: ScaleSpec::Pair([1280.0, 720.0]),
+                alpha: 1.0,
+                dance_every: 0.0,
+                scroll: [0.0, 0.0],
+                animations: Vec::new(),
+                starting_animation: None,
+                anim_type: "sparrow".to_owned(),
+                angle: 0.0,
+                blend: String::new(),
+                color: "#FFFFFF".to_owned(),
+                atlas_settings: None,
+            }],
+            characters: stage_chars,
+            camera_zoom: 0.9,
+            directory: "shared".to_owned(),
+        };
+        let stage = Stage::from_data_headless("test", stage_data);
+        let bf = make_test_character("bf", CharacterKind::Bf);
+        let dad = make_test_character("dad", CharacterKind::Dad);
+        let gf = make_test_character("gf", CharacterKind::Gf);
+
+        let raw_events: Vec<SongEventData> = serde_json::from_str(
+            r#"[
+                {"t": 0.0, "e": "FocusCamera", "v": {"char": 0, "ease": "INSTANT"}},
+                {"t": 0.0, "e": "ZoomCamera", "v": {"zoom": 1.2, "duration": 0, "mode": "direct", "ease": "INSTANT"}},
+                {"t": 250.0, "e": "PlayAnimation", "v": {"target": "bf", "anim": "hey", "force": true}},
+                {"t": 250.0, "e": "ScrollSpeed", "v": {"scroll": 2.0, "duration": 0, "ease": "INSTANT", "absolute": true}}
+            ]"#,
+        )
+        .expect("valid event json");
+        let events = SongEventQueue::from_raw_events(&raw_events);
+
+        let mut scene = PlayScene::new(
+            session,
+            Some(stage),
+            Some(bf),
+            Some(dad),
+            Some(gf),
+            events,
+            HealthIcon::placeholder("bf", true, false),
+            HealthIcon::placeholder("dad", false, false),
+            Some(CountdownAssets::empty(false)),
+            PlaySceneConfig {
+                song_name: "Test Song".to_owned(),
+                difficulty: "hard".to_owned(),
+                start_countdown: true,
+                song_duration_ms: Some(2500.0),
+                death_count: 0,
+            },
+        );
+
+        let style = StrumlineVisualStyle::fallback(TextureHandle(0));
+        let mut inputs = InputQueue::default();
+        let t0 = Instant::now();
+
+        // 1. Pre-roll countdown (-4 * 500ms = -2000ms -> 0ms at 120 BPM).
+        let c0 = scene.update(0.0, 0.0, t0, &mut inputs, None, &style);
+        assert_eq!(c0.countdown_step, Some(CountdownStep::Three));
+        assert_eq!(c0.countdown_sfx, Some(CountdownSfx::Intro3));
+        assert!(scene.icon_p1.bop_scale_mult > 1.0);
+
+        let c1 = scene.update(0.0, 0.5, t0, &mut inputs, None, &style);
+        assert_eq!(c1.countdown_step, Some(CountdownStep::Two));
+        assert_eq!(c1.countdown_sfx, Some(CountdownSfx::Intro2));
+
+        let c2 = scene.update(0.0, 0.5, t0, &mut inputs, None, &style);
+        assert_eq!(c2.countdown_step, Some(CountdownStep::One));
+        assert_eq!(c2.countdown_sfx, Some(CountdownSfx::Intro1));
+
+        let c3 = scene.update(0.0, 0.5, t0, &mut inputs, None, &style);
+        assert_eq!(c3.countdown_step, Some(CountdownStep::Go));
+        assert_eq!(c3.countdown_sfx, Some(CountdownSfx::IntroGo));
+
+        let c4 = scene.update(0.0, 0.5, t0, &mut inputs, None, &style);
+        assert!(c4.countdown_finished_now);
+        assert!(!scene.countdown.active);
+
+        // FocusCamera (BF) + ZoomCamera (1.2 direct) fired at t=0.
+        let bf_focus = scene.bf.as_ref().unwrap().get_camera_focus_point();
+        assert!((scene.camera_rig.cam_game.follow_point[0] - bf_focus[0]).abs() < 1e-3);
+        assert!((scene.camera_rig.cam_game.zoom - 1.2).abs() < 1e-4);
+
+        // 2. Advance to 250ms -> PlayAnimation("hey") on BF + ScrollSpeed(2.0).
+        let _ = scene.update(250.0, 1.0 / 60.0, t0, &mut inputs, None, &style);
+        assert_eq!(scene.bf.as_ref().unwrap().current_animation(), "hey");
+        assert!((scene.session.player_strumline.scroll_speed - 2.0).abs() < 1e-6);
+        assert!((scene.session.opponent_strumline.scroll_speed - 2.0).abs() < 1e-6);
+
+        // 3. Advance to 500ms -> Opponent hits Up note and sings singUP.
+        let opp_ev = scene.update(500.0, 1.0 / 60.0, t0, &mut inputs, None, &style);
+        assert_eq!(opp_ev.gameplay.opponent_hit_dir, Some(NoteDirection::Up));
+        assert_eq!(scene.dad.as_ref().unwrap().current_animation(), "singUP");
+
+        // 4. Hit player Left note at 1000ms -> BF sings singLEFT.
+        inputs.record_key(KeyCode::KeyA, true, false, t0);
+        let p_ev = scene.update(1000.0, 1.0 / 60.0, t0, &mut inputs, None, &style);
+        assert_eq!(p_ev.gameplay.player_hit_dir, Some(NoteDirection::Left));
+        assert_eq!(scene.bf.as_ref().unwrap().current_animation(), "singLEFT");
+
+        // 5. Reach song_duration_ms (2500ms) -> ResultsSummaryState activates.
+        let end_ev = scene.update(2500.0, 1.0 / 60.0, t0, &mut inputs, None, &style);
+        assert!(end_ev.song_finished_now);
+        assert!(scene.results.is_active);
     }
 }

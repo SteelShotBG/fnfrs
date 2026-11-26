@@ -18,8 +18,8 @@ pub use batch::{
     SPRITE_FLAG_PIXEL_SNAP, SPRITE_FLAG_ROTATED_90_CW,
 };
 pub use gpu::{
-    compute_letterbox_viewport, orthographic_projection, GpuContext, GpuError, TextureHandle,
-    ViewportRect,
+    compute_letterbox_viewport, orthographic_projection, zoomed_orthographic_projection, GpuContext,
+    GpuError, TextureHandle, ViewportRect,
 };
 pub use mesh_batch::{
     MeshBatchQueue, MeshBatcher, MeshDrawGroup, MeshVertex, SustainTrailParams,

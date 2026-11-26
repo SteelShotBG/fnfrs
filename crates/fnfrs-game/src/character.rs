@@ -1818,7 +1818,7 @@ impl BaseCharacter {
         let should_dance = if self.dance_every < 1.0 {
             true
         } else {
-            step % steps_per_dance == 0
+            (step as u32).is_multiple_of(steps_per_dance as u32)
         };
         if should_dance && self.last_dance_step != Some(step) {
             self.last_dance_step = Some(step);
@@ -1838,7 +1838,7 @@ impl BaseCharacter {
         if steps_per_dance <= 0 {
             return;
         }
-        if step % steps_per_dance == 0 && self.last_dance_step != Some(step) {
+        if (step as u32).is_multiple_of(steps_per_dance as u32) && self.last_dance_step != Some(step) {
             self.last_dance_step = Some(step);
             if self.kind == CharacterKind::Bf && is_holding_note && self.is_singing() {
                 return;

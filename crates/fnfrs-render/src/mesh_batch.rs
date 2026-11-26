@@ -8,7 +8,9 @@ use fnfrs_core::constants::{
 };
 
 use crate::batch::{BlendMode, FilterMode};
-use crate::gpu::{orthographic_projection, GpuContext, TextureHandle};
+use crate::gpu::{
+    orthographic_projection, zoomed_orthographic_projection, GpuContext, TextureHandle,
+};
 use crate::shaders::create_mesh_shader_module;
 
 /// Triangle indices for one sustain trail (4 hold body vertices + 4 endcap
@@ -494,6 +496,15 @@ impl MeshBatcher {
     #[inline]
     pub fn set_virtual_projection(&self, queue: &wgpu::Queue) {
         self.set_projection(queue, orthographic_projection(VIRTUAL_WIDTH, VIRTUAL_HEIGHT));
+    }
+
+    /// Sets the projection uniform to the `1280x720` virtual canvas with centered zoom.
+    #[inline]
+    pub fn set_zoomed_virtual_projection(&self, queue: &wgpu::Queue, zoom: f32) {
+        self.set_projection(
+            queue,
+            zoomed_orthographic_projection(VIRTUAL_WIDTH, VIRTUAL_HEIGHT, zoom),
+        );
     }
 
     /// Pushes indexed mesh geometry for the current frame.

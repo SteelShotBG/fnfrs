@@ -5,7 +5,9 @@ use bytemuck::{Pod, Zeroable};
 use fnfrs_core::constants::{VIRTUAL_HEIGHT, VIRTUAL_WIDTH};
 
 pub use crate::gpu::FilterMode;
-use crate::gpu::{orthographic_projection, GpuContext, TextureHandle};
+use crate::gpu::{
+    orthographic_projection, zoomed_orthographic_projection, GpuContext, TextureHandle,
+};
 use crate::shaders::create_sprite_shader_module;
 
 /// Flag indicating the subtexture is rotated 90 degrees CCW in the atlas and
@@ -450,6 +452,15 @@ impl SpriteBatcher {
     #[inline]
     pub fn set_virtual_projection(&self, queue: &wgpu::Queue) {
         self.set_projection(queue, orthographic_projection(VIRTUAL_WIDTH, VIRTUAL_HEIGHT));
+    }
+
+    /// Sets the projection uniform to the `1280x720` virtual canvas with centered zoom.
+    #[inline]
+    pub fn set_zoomed_virtual_projection(&self, queue: &wgpu::Queue, zoom: f32) {
+        self.set_projection(
+            queue,
+            zoomed_orthographic_projection(VIRTUAL_WIDTH, VIRTUAL_HEIGHT, zoom),
+        );
     }
 
     /// Enqueues a sprite instance for the current frame.

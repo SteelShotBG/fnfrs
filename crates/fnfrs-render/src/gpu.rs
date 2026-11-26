@@ -587,6 +587,15 @@ pub fn orthographic_projection(width: f32, height: f32) -> glam::Mat4 {
     )
 }
 
+/// Builds a 2D orthographic projection matrix with centered camera zoom around
+/// `(width * 0.5, height * 0.5)`.
+#[inline]
+#[must_use]
+pub fn zoomed_orthographic_projection(width: f32, height: f32, zoom: f32) -> glam::Mat4 {
+    glam::Mat4::from_scale(glam::Vec3::new(zoom, zoom, 1.0))
+        * orthographic_projection(width, height)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
