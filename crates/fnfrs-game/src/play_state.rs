@@ -1196,7 +1196,7 @@ impl PlayScene {
             elapsed_s,
             frame_timestamp,
             inputs,
-            audio,
+            audio.as_deref_mut(),
             style,
         );
         out.gameplay = gameplay;

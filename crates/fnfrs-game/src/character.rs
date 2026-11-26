@@ -412,6 +412,7 @@ impl AnimBank {
             target_name,
             indices,
             total_frames,
+            ..
         } = &anim.frames
         {
             let Some(LoadedAtlasSource::Animate { atlas, .. }) = self.atlases.get(*atlas_idx) else {

@@ -350,7 +350,7 @@ struct LoadedAnimateProp {
 
 impl LoadedAnimateProp {
     fn load(assets: &AssetLocator, gpu: &mut GpuContext, rel_dir: &str) -> Option<Self> {
-        let dir = assets.animate_dir(rel_dir);
+        let dir = assets.animate_atlas_dir(rel_dir);
         let anim_json = std::fs::read_to_string(dir.join("Animation.json")).ok()?;
         let mut sm_entries: Vec<(u32, std::path::PathBuf)> = Vec::new();
         for entry in std::fs::read_dir(&dir).ok()?.flatten() {
@@ -542,7 +542,7 @@ impl ABotSpeaker {
             std::fs::read_to_string(&xml_path),
             upload_png_path(gpu, Some("aBotViz"), &png_path),
         ) {
-            if let Ok(sparrow) = SparrowAtlas::from_xml_str(&xml) {
+            if let Ok(sparrow) = SparrowAtlas::from_xml(&xml) {
                 for i in 0..7usize {
                     let mut prefix_buf = [0u8; 16];
                     let pfx_len = {
@@ -964,7 +964,7 @@ impl TankmanRunners {
         ) else {
             return Self::default();
         };
-        let Ok(sparrow) = SparrowAtlas::from_xml_str(&xml) else {
+        let Ok(sparrow) = SparrowAtlas::from_xml(&xml) else {
             return Self::default();
         };
 
@@ -1052,7 +1052,8 @@ impl TankmanRunners {
                 }
                 if r.flickering {
                     r.flicker_timer_s += elapsed_s.max(0.0);
-                    r.visible = ((r.flicker_timer_s * 20.0) as i32).is_multiple_of(2);
+                    let flick = (r.flicker_timer_s * 20.0) as i32;
+                    r.visible = (flick & 1) == 0;
                     if r.flicker_timer_s >= 0.6 {
                         r.active = false;
                     }
@@ -1531,7 +1532,7 @@ impl NativeScriptHost {
         } else {
             match kind {
                 NoteKindTag::Cheer => {
-                    if let Some(c) = character {
+                    if let Some(c) = character.as_deref_mut() {
                         if c.id.eq_ignore_ascii_case("spooky-dark") {
                             c.hold_timer = 0.0;
                             c.play_animation("cheer", true, true);
@@ -1540,32 +1541,32 @@ impl NativeScriptHost {
                     }
                 }
                 NoteKindTag::Ugh => {
-                    if let Some(c) = character {
+                    if let Some(c) = character.as_deref_mut() {
                         c.play_animation("ugh", true, true);
                         return;
                     }
                 }
                 NoteKindTag::HehPrettyGood => {
-                    if let Some(c) = character {
+                    if let Some(c) = character.as_deref_mut() {
                         c.play_animation("hehPrettyGood", true, true);
                         return;
                     }
                 }
                 NoteKindTag::Weekend1LightCan => {
                     self.abot.look_left();
-                    if let Some(c) = character {
+                    if let Some(c) = character.as_deref_mut() {
                         c.play_animation("lightCan", true, true);
                     }
                     return;
                 }
                 NoteKindTag::Weekend1KickCan => {
-                    if let Some(c) = character {
+                    if let Some(c) = character.as_deref_mut() {
                         c.play_animation("kickCan", true, true);
                     }
                     return;
                 }
                 NoteKindTag::Weekend1KneeCan => {
-                    if let Some(c) = character {
+                    if let Some(c) = character.as_deref_mut() {
                         c.play_animation("kneeCan", true, true);
                     }
                     return;
@@ -1717,14 +1718,12 @@ impl NativeScriptHost {
                 if beat >= 0 && beat != (*last_change + *change_interval) && *car_interruptable && self.rng.bool_pct(10) {
                     *car_interruptable = false;
                     let variant = self.rng.range_i32(1, 4);
-                    let mut anim_buf = [0u8; 8];
                     let anim_str = match variant {
                         1 => "car1",
                         2 => "car2",
                         3 => "car3",
                         _ => "car4",
                     };
-                    let _ = &anim_buf;
                     if let Some(st) = stage.as_deref_mut() {
                         if let Some(c) = st.get_named_prop_mut("phillyCars") {
                             if let Some(bop) = &mut c.bopper {
@@ -1984,12 +1983,8 @@ impl NativeScriptHost {
                 if let Some(st) = stage.as_deref_mut() {
                     if let Some(c1) = st.get_named_prop_mut("phillyCars") {
                         let was_stopping = car1.stopping_at_lights;
-                        let (_, done) = car1.eval(
-                            elapsed_s,
-                            &mut c1.position[0],
-                            &mut c1.position[1],
-                            &mut c1.angle,
-                        );
+                        let [ref mut c1_x, ref mut c1_y] = c1.position;
+                        let (_, done) = car1.eval(elapsed_s, c1_x, c1_y, &mut c1.angle);
                         if done {
                             if was_stopping {
                                 if !*lights_stop {
@@ -2015,12 +2010,8 @@ impl NativeScriptHost {
                         }
                     }
                     if let Some(c2) = st.get_named_prop_mut("phillyCars2") {
-                        let (_, done) = car2.eval(
-                            elapsed_s,
-                            &mut c2.position[0],
-                            &mut c2.position[1],
-                            &mut c2.angle,
-                        );
+                        let [ref mut c2_x, ref mut c2_y] = c2.position;
+                        let (_, done) = car2.eval(elapsed_s, c2_x, c2_y, &mut c2.angle);
                         if done {
                             *car2_interruptable = true;
                         }
