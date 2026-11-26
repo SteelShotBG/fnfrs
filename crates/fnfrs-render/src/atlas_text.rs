@@ -10,21 +10,11 @@ use crate::text::TextAlign;
 
 const MAX_GLYPH_FRAMES: usize = 4;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 struct AtlasGlyph {
     sheet_idx: u8,
     frames: [Option<AtlasFrame>; MAX_GLYPH_FRAMES],
     frame_count: usize,
-}
-
-impl Default for AtlasGlyph {
-    fn default() -> Self {
-        Self {
-            sheet_idx: 0,
-            frames: [None, None, None, None],
-            frame_count: 0,
-        }
-    }
 }
 
 /// Draw options for [`AtlasFont::draw_bytes`] / [`AtlasFont::draw_str`].
