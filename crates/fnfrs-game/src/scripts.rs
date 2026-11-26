@@ -1790,7 +1790,7 @@ impl NativeScriptHost {
         &mut self,
         mut stage: Option<&mut Stage>,
         mut bf: Option<&mut BaseCharacter>,
-        mut dad: Option<&mut BaseCharacter>,
+        dad: Option<&mut BaseCharacter>,
         mut gf: Option<&mut BaseCharacter>,
     ) {
         apply_erect_adjust_color(
@@ -2425,7 +2425,7 @@ impl NativeScriptHost {
         beat: i32,
         mut stage: Option<&mut Stage>,
         mut bf: Option<&mut BaseCharacter>,
-        mut dad: Option<&mut BaseCharacter>,
+        dad: Option<&mut BaseCharacter>,
         mut gf: Option<&mut BaseCharacter>,
     ) -> ScriptStepOutput {
         let mut out = ScriptStepOutput::default();
@@ -2756,7 +2756,7 @@ impl NativeScriptHost {
         health: f32,
         mut stage: Option<&mut Stage>,
         mut bf: Option<&mut BaseCharacter>,
-        mut dad: Option<&mut BaseCharacter>,
+        dad: Option<&mut BaseCharacter>,
         mut gf: Option<&mut BaseCharacter>,
     ) -> ScriptStepOutput {
         let mut out = ScriptStepOutput::default();
