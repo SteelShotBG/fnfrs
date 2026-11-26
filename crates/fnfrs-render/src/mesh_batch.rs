@@ -596,6 +596,7 @@ impl MeshBatcher {
                     BlendMode::Normal => &self.pipeline_normal,
                     BlendMode::Add => &self.pipeline_add,
                     BlendMode::Screen => &self.pipeline_screen,
+                    BlendMode::Multiply => &self.pipeline_normal,
                 };
                 render_pass.set_pipeline(pipeline);
                 active_blend = Some(group.blend);
