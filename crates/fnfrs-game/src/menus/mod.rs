@@ -100,8 +100,7 @@ pub(crate) fn load_menu_image(
     key: &str,
 ) -> Option<(TextureHandle, [f32; 2])> {
     let path = assets.image(key);
-    let bytes = fs::read(path).ok()?;
-    let tex = gpu.from_png_bytes(Some(key), &bytes).ok()?;
+    let tex = gpu.from_png_path_cached(Some(key), &path).ok()?;
     let (w, h) = gpu.texture_size(tex)?;
     Some((tex, [w as f32, h as f32]))
 }

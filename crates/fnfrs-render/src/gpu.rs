@@ -1,9 +1,11 @@
 //! `wgpu` device, surface, texture registry, samplers, and virtual canvas
 //! viewport math.
 
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use fnfrs_core::constants::{VIRTUAL_HEIGHT, VIRTUAL_WIDTH};
+use rustc_hash::FxHashMap;
 use thiserror::Error;
 use winit::dpi::PhysicalSize;
 use winit::window::Window;
@@ -51,6 +53,9 @@ pub enum GpuError {
     #[error("RGBA8 byte length mismatch: expected {expected} bytes, got {actual}")]
     RgbaByteLengthMismatch { expected: usize, actual: usize },
 
+    #[error("failed to read image file: {0}")]
+    Io(#[from] std::io::Error),
+
     #[error("failed to decode PNG image: {0}")]
     ImageDecode(#[from] image::ImageError),
 
@@ -66,6 +71,7 @@ struct TextureEntry {
     _view: wgpu::TextureView,
     width: u32,
     height: u32,
+    pinned: bool,
     bind_group_nearest_clamp: wgpu::BindGroup,
     bind_group_linear_clamp: wgpu::BindGroup,
     bind_group_nearest_repeat: wgpu::BindGroup,
@@ -89,6 +95,7 @@ pub struct GpuContext {
     pub texture_bind_group_layout: wgpu::BindGroupLayout,
     textures: Vec<Option<TextureEntry>>,
     free_texture_slots: Vec<u32>,
+    png_cache: FxHashMap<PathBuf, TextureHandle>,
     white_texture: TextureHandle,
 }
 
@@ -245,6 +252,7 @@ impl GpuContext {
             texture_bind_group_layout,
             textures: Vec::new(),
             free_texture_slots: Vec::new(),
+            png_cache: FxHashMap::default(),
             white_texture: TextureHandle(0),
         };
 
@@ -368,6 +376,7 @@ impl GpuContext {
             _view: view,
             width,
             height,
+            pinned: false,
             bind_group_nearest_clamp,
             bind_group_linear_clamp,
             bind_group_nearest_repeat,
@@ -387,7 +396,14 @@ impl GpuContext {
         Ok(TextureHandle(index))
     }
 
-    /// Unloads a GPU texture and recycles its slot index (preserving `white_texture`).
+    /// Marks `handle` as persistent so [`clear_user_textures`] preserves it across screen transitions.
+    pub fn pin_texture(&mut self, handle: TextureHandle) {
+        if let Some(Some(entry)) = self.textures.get_mut(handle.0 as usize) {
+            entry.pinned = true;
+        }
+    }
+
+    /// Unloads a GPU texture and recycles its slot index (preserving `white_texture` and pinned textures).
     pub fn unload_texture(&mut self, handle: TextureHandle) -> bool {
         if handle == self.white_texture {
             return false;
@@ -395,25 +411,36 @@ impl GpuContext {
         let Some(slot) = self.textures.get_mut(handle.0 as usize) else {
             return false;
         };
+        if slot.as_ref().is_some_and(|e| e.pinned) {
+            return false;
+        }
         if slot.take().is_some() {
             self.free_texture_slots.push(handle.0);
+            self.png_cache.retain(|_, &mut h| h != handle);
             true
         } else {
             false
         }
     }
 
-    /// Releases all textures except the built-in 1x1 `white_texture` so song/stage
-    /// transitions reclaim GPU VRAM cleanly.
+    /// Releases all non-pinned textures except `white_texture` so screen/song
+    /// transitions reclaim GPU VRAM without forcing reloads of persistent UI assets.
     pub fn clear_user_textures(&mut self) {
         self.free_texture_slots.clear();
         for (idx, slot) in self.textures.iter_mut().enumerate() {
-            if idx as u32 == self.white_texture.0 {
+            if idx as u32 == self.white_texture.0 || slot.as_ref().is_some_and(|e| e.pinned) {
                 continue;
             }
             *slot = None;
             self.free_texture_slots.push(idx as u32);
         }
+        let textures = &self.textures;
+        self.png_cache.retain(|_, &mut handle| {
+            textures
+                .get(handle.0 as usize)
+                .and_then(|s| s.as_ref())
+                .is_some()
+        });
     }
 
     /// Creates a 1x1 opaque white RGBA8 texture (`[255, 255, 255, 255]`).
@@ -432,6 +459,29 @@ impl GpuContext {
         let rgba = decoded.to_rgba8();
         let (width, height) = rgba.dimensions();
         self.create_texture_rgba8(label, width, height, rgba.as_raw())
+    }
+
+    /// Uploads a PNG from `path`, returning an already-cached [`TextureHandle`] if
+    /// the same path was already uploaded during the current screen/stage lifetime.
+    pub fn from_png_path_cached(
+        &mut self,
+        label: Option<&str>,
+        path: &Path,
+    ) -> Result<TextureHandle, GpuError> {
+        if let Some(&handle) = self.png_cache.get(path) {
+            if self
+                .textures
+                .get(handle.0 as usize)
+                .and_then(|s| s.as_ref())
+                .is_some()
+            {
+                return Ok(handle);
+            }
+        }
+        let bytes = std::fs::read(path)?;
+        let handle = self.from_png_bytes(label, &bytes)?;
+        self.png_cache.insert(path.to_path_buf(), handle);
+        Ok(handle)
     }
 
     /// Returns `(width, height)` in pixels for `handle`, if valid.

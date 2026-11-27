@@ -1,7 +1,5 @@
 //! V-Slice global volume SoundTray overlay (`FunkinSoundTray.hx`).
 
-use std::fs;
-
 use fnfrs_core::constants::VIRTUAL_WIDTH;
 use fnfrs_core::paths::AssetLocator;
 use fnfrs_render::{
@@ -32,7 +30,7 @@ impl SoundTray {
             let key = format!("soundtray/bars_{}", idx + 1);
             *slot = upload_ui_png(assets, gpu, &key);
         }
-        Self {
+        let mut tray = Self {
             white_tex: gpu.white_texture(),
             box_tex,
             bar_tex,
@@ -40,6 +38,18 @@ impl SoundTray {
             muted,
             visible_timer_s: 0.0,
             lerp_y: -90.0,
+        };
+        tray.pin_textures(gpu);
+        tray
+    }
+
+    /// Pins SoundTray textures inside `gpu` so screen transitions never evict them.
+    pub fn pin_textures(&self, gpu: &mut GpuContext) {
+        if let Some((tex, _)) = self.box_tex {
+            gpu.pin_texture(tex);
+        }
+        for slot in self.bar_tex.iter().flatten() {
+            gpu.pin_texture(slot.0);
         }
     }
 
@@ -51,6 +61,7 @@ impl SoundTray {
             let key = format!("soundtray/bars_{}", idx + 1);
             *slot = upload_ui_png(assets, gpu, &key);
         }
+        self.pin_textures(gpu);
     }
 
     /// Returns effective gain `0.0..=1.0`.
@@ -184,8 +195,8 @@ fn upload_ui_png(
     gpu: &mut GpuContext,
     key: &str,
 ) -> Option<(TextureHandle, [f32; 2])> {
-    let bytes = fs::read(assets.image(key)).ok()?;
-    let tex = gpu.from_png_bytes(Some(key), &bytes).ok()?;
+    let path = assets.image(key);
+    let tex = gpu.from_png_path_cached(Some(key), &path).ok()?;
     let (w, h) = gpu.texture_size(tex)?;
     Some((tex, [w as f32, h as f32]))
 }

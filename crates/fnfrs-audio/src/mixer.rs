@@ -6,7 +6,10 @@ use rtrb::{Consumer, Producer, RingBuffer};
 use thiserror::Error;
 
 use crate::clock::{SampleClock, SampleClockShared};
-use crate::decoder::DecodedAudio;
+use crate::decoder::{DecodeError, DecodedAudio};
+use crate::stream::{
+    spawn_song_stream, StreamAudioSink, StreamedSongConfig, StreamedSongOwner, VizSampleHistory,
+};
 
 /// Maximum concurrent one-shot sound effects mixed on the audio thread.
 pub const MAX_SFX_VOICES: usize = 16;
@@ -24,6 +27,8 @@ pub enum AudioError {
     PlayStream(String),
     #[error("audio command queue full")]
     QueueFull,
+    #[error("stream decode failed: {0}")]
+    Decode(#[from] DecodeError),
 }
 
 /// Identifies one of the three synchronized song stems.
@@ -103,6 +108,15 @@ pub enum AudioCommand {
         tracks: Box<SongTracks>,
         start_frame: u64,
     },
+    LoadStream {
+        sink: Box<StreamAudioSink>,
+        start_frame: u64,
+        epoch: u32,
+    },
+    SeekStream {
+        start_frame: u64,
+        epoch: u32,
+    },
     UnloadSong,
     Play,
     Pause,
@@ -124,6 +138,7 @@ pub enum AudioCommand {
 /// Replaced buffers returned to the main thread so the audio callback never deallocates.
 pub enum RetiredResource {
     Song(Box<SongTracks>),
+    Stream(Box<StreamAudioSink>),
     Sfx(Box<SfxBank>),
     Audio(Box<DecodedAudio>),
 }
@@ -141,8 +156,11 @@ pub struct MixerState {
     cmd_rx: Consumer<AudioCommand>,
     retired_tx: Producer<RetiredResource>,
     clock: Arc<SampleClockShared>,
+    viz_history: Arc<VizSampleHistory>,
 
     song: Option<Box<SongTracks>>,
+    stream: Option<Box<StreamAudioSink>>,
+    stream_epoch: u32,
     song_cursor_frames: u64,
     is_playing: bool,
 
@@ -169,7 +187,10 @@ impl MixerState {
             cmd_rx,
             retired_tx,
             clock,
+            viz_history: Arc::new(VizSampleHistory::new()),
             song: None,
+            stream: None,
+            stream_epoch: 1,
             song_cursor_frames: 0,
             is_playing: false,
             inst_gain: 1.0,
@@ -181,6 +202,13 @@ impl MixerState {
             bg_loop: None,
             bg_loop_cursor: 0,
         }
+    }
+
+    /// Attaches a shared [`VizSampleHistory`] buffer populated cleanly on the audio thread.
+    #[must_use]
+    pub fn with_viz_history(mut self, viz_history: Arc<VizSampleHistory>) -> Self {
+        self.viz_history = viz_history;
+        self
     }
 
     /// Processes queued commands and fills `output` with mixed PCM frames.
@@ -200,16 +228,47 @@ impl MixerState {
                     if let Some(old) = self.song.replace(tracks) {
                         let _ = self.retired_tx.push(RetiredResource::Song(old));
                     }
+                    if let Some(old_stream) = self.stream.take() {
+                        let _ = self.retired_tx.push(RetiredResource::Stream(old_stream));
+                    }
                     self.song_cursor_frames = start_frame;
                     self.is_playing = false;
+                    self.viz_history.reset();
+                    transport_reset = true;
+                }
+                AudioCommand::LoadStream {
+                    sink,
+                    start_frame,
+                    epoch,
+                } => {
+                    if let Some(old_stream) = self.stream.replace(sink) {
+                        let _ = self.retired_tx.push(RetiredResource::Stream(old_stream));
+                    }
+                    if let Some(old) = self.song.take() {
+                        let _ = self.retired_tx.push(RetiredResource::Song(old));
+                    }
+                    self.stream_epoch = epoch;
+                    self.song_cursor_frames = start_frame;
+                    self.is_playing = false;
+                    self.viz_history.reset();
+                    transport_reset = true;
+                }
+                AudioCommand::SeekStream { start_frame, epoch } => {
+                    self.stream_epoch = epoch;
+                    self.song_cursor_frames = start_frame;
+                    self.viz_history.reset();
                     transport_reset = true;
                 }
                 AudioCommand::UnloadSong => {
                     if let Some(old) = self.song.take() {
                         let _ = self.retired_tx.push(RetiredResource::Song(old));
                     }
+                    if let Some(old_stream) = self.stream.take() {
+                        let _ = self.retired_tx.push(RetiredResource::Stream(old_stream));
+                    }
                     self.song_cursor_frames = 0;
                     self.is_playing = false;
+                    self.viz_history.reset();
                     transport_reset = true;
                 }
                 AudioCommand::Play => {
@@ -220,6 +279,7 @@ impl MixerState {
                 }
                 AudioCommand::SeekFrame(frame) => {
                     self.song_cursor_frames = frame;
+                    self.viz_history.reset();
                     transport_reset = true;
                 }
                 AudioCommand::SetTrackGain { track, gain } => match track {
@@ -261,10 +321,41 @@ impl MixerState {
             let mut right = 0.0_f32;
 
             if self.is_playing {
-                if let Some(song) = &self.song {
+                if let Some(stream) = &mut self.stream {
+                    let target_epoch = self.stream_epoch;
+                    let mut popped = None;
+                    while let Ok(s) = stream.rx.pop() {
+                        if s.epoch == target_epoch {
+                            popped = Some(s);
+                            break;
+                        }
+                    }
+                    if let Some(s) = popped {
+                        self.viz_history.push_mono((s.inst[0] + s.inst[1]) * 0.5);
+                        left += s.inst[0] * self.inst_gain
+                            + s.pv[0] * self.player_vocals_gain
+                            + s.ov[0] * self.opponent_vocals_gain;
+                        right += s.inst[1] * self.inst_gain
+                            + s.pv[1] * self.player_vocals_gain
+                            + s.ov[1] * self.opponent_vocals_gain;
+                        self.song_cursor_frames += 1;
+                    } else if stream
+                        .ctl
+                        .eof_reached
+                        .load(std::sync::atomic::Ordering::Acquire)
+                        && stream
+                            .ctl
+                            .eof_epoch
+                            .load(std::sync::atomic::Ordering::Acquire)
+                            == target_epoch
+                    {
+                        self.is_playing = false;
+                    }
+                } else if let Some(song) = &self.song {
                     if self.song_cursor_frames < song.duration_frames {
                         if let Some(inst) = &song.inst {
                             let [l, r] = inst.sample_at_song_frame(self.song_cursor_frames);
+                            self.viz_history.push_mono((l + r) * 0.5);
                             left += l * self.inst_gain;
                             right += r * self.inst_gain;
                         }
@@ -352,6 +443,8 @@ pub struct AudioEngine {
     cmd_tx: Producer<AudioCommand>,
     retired_rx: Consumer<RetiredResource>,
     clock: SampleClock,
+    viz_history: Arc<VizSampleHistory>,
+    stream_owner: Option<StreamedSongOwner>,
     sample_rate: u32,
 }
 
@@ -373,7 +466,9 @@ impl AudioEngine {
         let (cmd_tx, cmd_rx) = RingBuffer::<AudioCommand>::new(64);
         let (retired_tx, retired_rx) = RingBuffer::<RetiredResource>::new(16);
         let clock_shared = Arc::new(SampleClockShared::new(sample_rate));
-        let mut mixer = MixerState::new(cmd_rx, retired_tx, clock_shared.clone());
+        let viz_history = Arc::new(VizSampleHistory::new());
+        let mut mixer = MixerState::new(cmd_rx, retired_tx, clock_shared.clone())
+            .with_viz_history(Arc::clone(&viz_history));
 
         let stream = device
             .build_output_stream::<f32, _, _>(
@@ -393,6 +488,8 @@ impl AudioEngine {
             cmd_tx,
             retired_rx,
             clock: SampleClock::new(clock_shared),
+            viz_history,
+            stream_owner: None,
             sample_rate,
         })
     }
@@ -401,6 +498,12 @@ impl AudioEngine {
     #[must_use]
     pub fn sample_rate(&self) -> u32 {
         self.sample_rate
+    }
+
+    /// Lock-free mono instrumental sample history for A-Bot FFT visualization.
+    #[must_use]
+    pub fn viz_history(&self) -> Arc<VizSampleHistory> {
+        Arc::clone(&self.viz_history)
     }
 
     /// Mutable reference to the main-thread [`SampleClock`].
@@ -427,14 +530,37 @@ impl AudioEngine {
         self.cmd_tx.push(cmd).map_err(|_| AudioError::QueueFull)
     }
 
-    /// Loads synchronized song stems starting at `start_ms`.
+    /// Loads synchronized pre-decoded song stems starting at `start_ms`.
     pub fn load_song(&mut self, tracks: SongTracks, start_ms: f64) -> Result<(), AudioError> {
+        self.stream_owner = None;
         let start_frame =
             ((start_ms.max(0.0) / 1000.0) * f64::from(self.sample_rate)).round() as u64;
         self.send(AudioCommand::LoadSong {
             tracks: Box::new(tracks),
             start_frame,
         })
+    }
+
+    /// Streams synchronized multi-stem song tracks from disk via background decoder thread,
+    /// keeping song RAM under ~4 MB. Returns optional duration in milliseconds.
+    pub fn load_song_streamed(
+        &mut self,
+        cfg: StreamedSongConfig,
+        start_ms: f64,
+    ) -> Result<Option<f64>, AudioError> {
+        let start_frame =
+            ((start_ms.max(0.0) / 1000.0) * f64::from(self.sample_rate)).round() as u64;
+        let (sink, owner, epoch) = spawn_song_stream(cfg, start_frame)?;
+        let duration_ms = owner
+            .duration_frames
+            .map(|f| (f as f64 / f64::from(self.sample_rate.max(1))) * 1000.0);
+        self.stream_owner = Some(owner);
+        self.send(AudioCommand::LoadStream {
+            sink: Box::new(sink),
+            start_frame,
+            epoch,
+        })?;
+        Ok(duration_ms)
     }
 
     /// Starts or resumes song transport.
@@ -450,7 +576,15 @@ impl AudioEngine {
     /// Seeks song transport to `ms`.
     pub fn seek_ms(&mut self, ms: f64) -> Result<(), AudioError> {
         let frame = ((ms.max(0.0) / 1000.0) * f64::from(self.sample_rate)).round() as u64;
-        self.send(AudioCommand::SeekFrame(frame))
+        if let Some(owner) = &self.stream_owner {
+            let epoch = owner.seek_frame(frame);
+            self.send(AudioCommand::SeekStream {
+                start_frame: frame,
+                epoch,
+            })
+        } else {
+            self.send(AudioCommand::SeekFrame(frame))
+        }
     }
 
     /// Adjusts individual stem gain (`Inst`, `PlayerVocals`, `OpponentVocals`).

@@ -11,6 +11,7 @@
   - Reference game install: `C:\Users\mamta\Downloads\stuff\funkin-windows-64bit`
   - Reference assets: `C:\Users\mamta\Downloads\stuff\funkin-windows-64bit\assets`
   - Reference Haxe source code: `C:\Users\mamta\Downloads\base-source`
+- **File Modularity Rule**: Keep Rust modules focused and manageable in size (aim for under ~600–800 lines per file when practical). Whenever a file would grow large after changes or a new subsystem is added, split it cleanly into submodules (`foo/mod.rs`, `foo/bar.rs`) while preserving public re-exports.
 - **Orientation**: Read `ARCHITECTURE.md` at the start of a new session for the crate map and current implementation status.
 
 ## 2. Pinned Crate Versions (Verified on crates.io & docs.rs)
