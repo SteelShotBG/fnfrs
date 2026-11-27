@@ -3,8 +3,12 @@
 ## 1. Environment & Compiler Rules (CRITICAL)
 - **NO LOCAL RUST COMPILER**: `rustc`, `cargo`, and `rustup` are intentionally NOT installed on this machine to avoid SSD wear. **NEVER** attempt to run `cargo`, `rustc`, `rustup`, or `clippy` via shell commands.
 - **GitHub Actions Only**: All formatting checks, `cargo clippy`, `cargo test`, and Windows `.exe` release builds run exclusively in `.github/workflows/build.yml` on `windows-latest`.
-- **No Hardcoded User Paths**: Never hardcode `C:\Users\...` or machine-specific paths in code or tests. At runtime, resolve `assets/` by checking `<exe_dir>/assets` first, then `<cwd>/assets`.
-- **Keep Assets Out of Git**: Never commit game assets (`assets/`), compiled binaries (`*.exe`), or `target/`. Ensure `.gitignore` ignores `/assets/`, `/target/`, and `*.exe`.
+- **No Hardcoded User Paths**: Never hardcode `C:\Users\...` or machine-specific paths in code or tests. At runtime, resolve `assets/` by checking `<exe_dir>/assets` first, then `<cwd>/assets`, and resolve `save.json` next to the executable (`<exe_dir>/save.json`, fallback `<cwd>/save.json`).
+- **Keep Assets Out of Git**: Never commit game assets (`assets/`), save files (`save.json`), compiled binaries (`*.exe`, `*.dll`), or `target/`. Ensure `.gitignore` ignores `/assets/`, `/target/`, and `*.exe`.
+- **Runtime `libvlc.dll` Only**: Video cutscenes (`fnfrs-game::video`) must load `libvlc.dll` dynamically at runtime via Win32 FFI (`LoadLibraryW` / `GetProcAddress`) so CI builds require zero VLC SDK headers or `.lib` files.
+- **Excluded Scope**: `ChartEditorState` and `StageEditorState` are intentionally excluded; `sserafim` (`spaghetti`) stage/song support is included.
+- **Pre-Push Sanity Checks**: Because no local Rust compiler exists, run lightweight Python static checks (delimiter balance, call arity, unused imports) before committing and pushing to `main`.
+- **Orientation**: Read `ARCHITECTURE.md` at the start of a new session for the crate map and current implementation status.
 
 ## 2. Pinned Crate Versions (Verified on crates.io & docs.rs)
 Pin these exact versions in workspace `Cargo.toml` (`[workspace.dependencies]`):
@@ -53,8 +57,10 @@ Pin these exact versions in workspace `Cargo.toml` (`[workspace.dependencies]`):
 - **Audio Thread Lock-Free Rule**:
   - Pre-decode or ring-buffer PCM `f32` stereo samples at the device sample rate before song start.
   - The `cpal` audio callback must **never** lock a `Mutex`, allocate, or perform I/O.
-  - Control commands (`Play`, `Pause`, `Seek`, `SetGain`, `PlaySfx`) cross via `rtrb::Producer` -> `rtrb::Consumer`.
+  - Control commands (`Play`, `Pause`, `Seek`, `SetGain`, `PlaySfx`, `StartBgLoop`, `StopBgLoop`) cross via `rtrb::Producer` -> `rtrb::Consumer`, and replaced buffers return via `RetiredResource` for main-thread deallocation (`engine.reclaim_retired()`).
   - Playback position is published via `AtomicU64` (played sample frames) + `Instant` timestamp anchor for sub-frame interpolation on the main/input thread.
+- **Lazy Screen & Texture Lifecycle**:
+  - Keep only the active screen (`Title`, `MainMenu`, `StoryMenu`, `Freeplay`, `Options`, `CharSelect`, or `Gameplay`) resident in `RuntimeState`, purging GPU textures (`gpu.clear_user_textures()`) and retired audio on transitions, and lazily loading/unloading Story Mode week props (`gpu.unload_texture()`).
 
 ## 4. V-Slice Parity Constants
 - Virtual canvas: `1280 x 720`. Pixel-art scale: `6.0` with `wgpu::FilterMode::Nearest`.
