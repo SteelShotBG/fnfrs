@@ -38,8 +38,8 @@ pub(super) struct SpiritTrail {
 impl Default for SpiritTrail {
     fn default() -> Self {
         Self {
-            pub(super) enabled: false,
-            pub(super) z_index: 190,
+            enabled: false,
+            z_index: 190,
             delay_s: 0.4,
             base_alpha: 0.3,
             alpha_diff: 0.069,

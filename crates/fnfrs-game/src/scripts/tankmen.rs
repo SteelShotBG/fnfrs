@@ -63,9 +63,9 @@ pub(super) struct TankmanRunners {
 impl Default for TankmanRunners {
     fn default() -> Self {
         Self {
-            pub(super) enabled: false,
+            enabled: false,
             is_erect: false,
-            pub(super) z_index: 30,
+            z_index: 30,
             texture: None,
             tex_size: [1.0, 1.0],
             run_frames: Vec::new(),
@@ -117,9 +117,9 @@ impl TankmanRunners {
         }
 
         Self {
-            pub(super) enabled: true,
+            enabled: true,
             is_erect,
-            pub(super) z_index: 30,
+            z_index: 30,
             texture: Some(tex),
             tex_size,
             run_frames: sparrow.frames_by_prefix("tankman running").cloned().collect(),

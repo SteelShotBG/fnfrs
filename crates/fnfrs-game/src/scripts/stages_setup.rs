@@ -5,7 +5,7 @@ use fnfrs_render::{BlendMode, GpuContext};
 use super::abot::ABotSpeaker;
 use super::speaker::SpeakerShooter;
 use super::spirit::SpiritTrail;
-use super::spraycan::SpraycanPool;
+use super::spraycan::{QuadCarTween, SpraycanPool};
 use super::tankmen::TankmanRunners;
 use super::{NativeScriptHost, ScriptRng, ScriptSfxSlots, StageScript};
 use crate::character::{upload_png_path, BaseCharacter, CharacterKind};

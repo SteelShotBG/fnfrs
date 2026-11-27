@@ -195,11 +195,11 @@ pub(super) struct ABotSpeaker {
 impl Default for ABotSpeaker {
     fn default() -> Self {
         Self {
-            pub(super) enabled: false,
+            enabled: false,
             is_dark: false,
             is_otis: false,
             is_tankmen: false,
-            pub(super) gf_z: 300,
+            gf_z: 300,
             abot: None,
             eyes: None,
             stereo_bg: None,
@@ -207,7 +207,7 @@ impl Default for ABotSpeaker {
             viz_tex: None,
             viz_bars: std::array::from_fn(|_| Vec::new()),
             viz_levels: [0; 7],
-            pub(super) analyzer: ABotSpectralAnalyzer::new(),
+            analyzer: ABotSpectralAnalyzer::new(),
             muzzle_tex: None,
             muzzle_anims: std::array::from_fn(|_| Vec::new()),
             muzzle_active: false,
@@ -215,7 +215,7 @@ impl Default for ABotSpeaker {
             muzzle_offset: [0.0, 0.0],
             muzzle_time_s: 0.0,
             pupil_state: PupilLook::Right,
-            pub(super) nene_knife_enabled: false,
+            nene_knife_enabled: false,
             nene_state: NeneState::Default,
             blink_countdown: 3,
         }
@@ -312,7 +312,7 @@ impl ABotSpeaker {
         let gf_z = gf.map_or(300, |g| g.z_index);
         let nene_knife_enabled = is_nene;
         Self {
-            pub(super) enabled: abot.is_some() || stereo_bg.is_some(),
+            enabled: abot.is_some() || stereo_bg.is_some(),
             is_dark,
             is_otis,
             is_tankmen,
@@ -324,7 +324,7 @@ impl ABotSpeaker {
             viz_tex,
             viz_bars,
             viz_levels: [0; 7],
-            pub(super) analyzer: ABotSpectralAnalyzer::new(),
+            analyzer: ABotSpectralAnalyzer::new(),
             muzzle_tex,
             muzzle_anims,
             muzzle_active: false,

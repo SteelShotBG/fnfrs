@@ -12,19 +12,23 @@ pub use session::{GameplaySfxSlots, PlayConfig, PlaySession, PlayStepEvents};
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fnfrs_core::schema::song::{SongMetadata, SongNoteData};
-    use fnfrs_core::scoring::Judgement;
-    use crate::input::NoteDirection;
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
 
     use fnfrs_core::constants::HIT_WINDOW_MS;
     use fnfrs_core::schema::character::{AnimationData, CharacterData, CharacterRenderType};
-    use fnfrs_core::schema::song::SongEventData;
+    use fnfrs_core::schema::song::{SongEventData, SongNoteData};
     use fnfrs_core::schema::stage::{ScaleSpec, StageData, StageDataCharacters, StageDataProp};
+    use fnfrs_core::scoring::Judgement;
+    use fnfrs_render::TextureHandle;
     use winit::keyboard::KeyCode;
 
-    use super::*;
-    use crate::character::CharacterKind;
+    use crate::character::{BaseCharacter, CharacterKind};
+    use crate::countdown::{CountdownAssets, CountdownSfx, CountdownStep};
+    use crate::events::SongEventQueue;
+    use crate::hud::HealthIcon;
+    use crate::input::{InputQueue, NoteDirection};
+    use crate::stage::Stage;
+    use crate::strumline::StrumlineVisualStyle;
 
     fn make_anim(name: &str, looped: bool) -> AnimationData {
         AnimationData {

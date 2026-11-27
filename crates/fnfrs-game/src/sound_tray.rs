@@ -30,7 +30,7 @@ impl SoundTray {
             let key = format!("soundtray/bars_{}", idx + 1);
             *slot = upload_ui_png(assets, gpu, &key);
         }
-        let mut tray = Self {
+        let tray = Self {
             white_tex: gpu.white_texture(),
             box_tex,
             bar_tex,

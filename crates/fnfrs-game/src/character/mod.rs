@@ -10,8 +10,10 @@ pub mod base_character;
 pub use atlas_bank::apply_camera_transform;
 pub use base_character::BaseCharacter;
 pub(crate) use atlas_bank::{
-    compute_flipped_trim_offset, draw_animate_parts, load_animate_source, upload_png_path,
-    AtlasDrawParams, LoadedAtlasSource,
+    build_loaded_anim, compute_flipped_trim_offset, draw_animate_parts, draw_atlas_frame,
+    format_stack_join, load_animate_source, load_packer_source, load_sparrow_source,
+    make_loaded_anim_entry, upload_png_path, AnimBank, AnimFrames, AtlasDrawParams, LoadedAnim,
+    LoadedAtlasSource,
 };
 /// Role of a character in gameplay (`CharacterType` in `BaseCharacter.hx`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
@@ -28,9 +30,7 @@ mod tests {
     use super::*;
     use fnfrs_core::schema::character::{AnimationData, CharacterData, CharacterRenderType};
     use fnfrs_core::schema::stage::StageDataCharacter;
-    use fnfrs_render::AtlasFrame;
     use crate::input::NoteDirection;
-    use super::*;
 
     fn approx_eq(a: f32, b: f32) -> bool {
         (a - b).abs() < 1e-4

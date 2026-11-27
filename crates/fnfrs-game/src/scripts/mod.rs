@@ -14,11 +14,13 @@ mod tankmen;
 use std::sync::Arc;
 
 use fnfrs_audio::{DecodedAudio, VizSampleHistory};
+use fnfrs_render::TextureHandle;
 
 use abot::ABotSpeaker;
 use speaker::SpeakerShooter;
 use spirit::SpiritTrail;
-use spraycan::SpraycanPool;
+use spraycan::{QuadCarTween, SpraycanPool};
+use crate::character::BaseCharacter;
 use tankmen::TankmanRunners;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum NoteKindTag {
@@ -342,6 +344,12 @@ impl NativeScriptHost {
 
     /// True for stages that suppress standard combo popups (`sserafim`).
     #[must_use]
+    /// Returns `true` when the active stage/character script manages GF's beat dancing directly.
+    #[must_use]
+    pub fn owns_gf_dance(&self) -> bool {
+        self.abot.nene_knife_enabled
+    }
+
     pub fn hides_popups(&self) -> bool {
         self.stage_id_lower == "sserafim"
     }

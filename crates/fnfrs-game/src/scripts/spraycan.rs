@@ -6,17 +6,17 @@ use fnfrs_render::{AnimateAtlas, BlendMode, EvaluatedPart, GpuContext, SpriteBat
 use crate::character::{draw_animate_parts, load_animate_source, AtlasDrawParams, LoadedAtlasSource};
 use crate::stage::Stage;
 #[derive(Debug, Clone, Default)]
-struct QuadCarTween {
-    active: bool,
-    elapsed_s: f32,
-    duration_s: f32,
-    start_delay_s: f32,
-    p0: [f32; 2],
-    p1: [f32; 2],
-    p2: [f32; 2],
-    rot_start: f32,
-    rot_end: f32,
-    stopping_at_lights: bool,
+pub(super) struct QuadCarTween {
+    pub(super) active: bool,
+    pub(super) elapsed_s: f32,
+    pub(super) duration_s: f32,
+    pub(super) start_delay_s: f32,
+    pub(super) p0: [f32; 2],
+    pub(super) p1: [f32; 2],
+    pub(super) p2: [f32; 2],
+    pub(super) rot_start: f32,
+    pub(super) rot_end: f32,
+    pub(super) stopping_at_lights: bool,
 }
 
 impl QuadCarTween {
@@ -84,14 +84,14 @@ pub(super) struct SpraycanPool {
 impl Default for SpraycanPool {
     fn default() -> Self {
         Self {
-            pub(super) enabled: false,
+            enabled: false,
             atlas: None,
             textures: Vec::new(),
             bounds_origin: [0.0, 0.0],
             bounds_size: [1.0, 1.0],
             parts_bufs: Default::default(),
             slots: [SpraycanSlot::default(); 4],
-            pub(super) gun_cocked_timer_s: 0.0,
+            gun_cocked_timer_s: 0.0,
             darken_timer_s: None,
         }
     }
@@ -113,7 +113,7 @@ impl SpraycanPool {
             return Self::default();
         };
         Self {
-            pub(super) enabled: true,
+            enabled: true,
             atlas: Some(atlas),
             textures,
             bounds_origin,
@@ -125,7 +125,7 @@ impl SpraycanPool {
                 Vec::with_capacity(24),
             ],
             slots: [SpraycanSlot::default(); 4],
-            pub(super) gun_cocked_timer_s: 0.0,
+            gun_cocked_timer_s: 0.0,
             darken_timer_s: None,
         }
     }

@@ -1,5 +1,6 @@
 use fnfrs_render::{BlendMode, FilterMode, SpriteBatcher, SpriteInstance, TextureHandle};
 
+use super::spraycan::QuadCarTween;
 use super::{NativeScriptHost, ScriptStepOutput, StageScript};
 use crate::character::{apply_camera_transform, BaseCharacter};
 use crate::stage::Stage;

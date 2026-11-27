@@ -13,10 +13,7 @@ use fnfrs_core::scoring::{
     format_score_into, get_miss_score, judge_note, score_note, Judgement, ScoreTallies,
     ScoringSystem,
 };
-use fnfrs_render::{
-    BitmapFont, BlendMode, FilterMode, MeshBatcher, SpriteBatcher, SpriteInstance, TextAlign,
-    TextStyle, TextureHandle,
-};
+use fnfrs_render::{BitmapFont, MeshBatcher, SpriteBatcher, TextAlign, TextStyle, TextureHandle};
 
 use crate::input::{compute_note_diff_ms, InputQueue, NoteDirection};
 use crate::note_style::NoteStyleAssets;

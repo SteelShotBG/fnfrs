@@ -27,7 +27,6 @@ pub use results::{compute_accuracy_percent, ResultsAction, ResultsRank, ResultsS
 mod tests {
     use super::*;
     use fnfrs_core::scoring::ScoreTallies;
-    use super::*;
 
     #[test]
     fn icon_frame_selection_for_two_and_three_frame_strips() {

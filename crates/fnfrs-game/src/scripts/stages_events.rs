@@ -1,3 +1,4 @@
+use super::spraycan::QuadCarTween;
 use super::{NativeScriptHost, NoteKindTag, ScriptStepOutput, StageScript};
 use crate::character::BaseCharacter;
 use crate::input::NoteDirection;

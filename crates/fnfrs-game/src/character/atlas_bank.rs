@@ -1100,7 +1100,7 @@ impl std::fmt::Write for StackBuf<'_> {
 
 #[inline]
 #[must_use]
-const pub(super) fn dir_upper(dir: NoteDirection) -> &'static str {
+pub(super) const fn dir_upper(dir: NoteDirection) -> &'static str {
     match dir {
         NoteDirection::Left => "LEFT",
         NoteDirection::Down => "DOWN",
