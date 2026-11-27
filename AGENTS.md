@@ -7,6 +7,10 @@
 - **Keep Assets Out of Git**: Never commit game assets (`assets/`), save files (`save.json`), compiled binaries (`*.exe`, `*.dll`), or `target/`. Ensure `.gitignore` ignores `/assets/`, `/target/`, and `*.exe`.
 - **Runtime `libvlc.dll` Only**: Video cutscenes (`fnfrs-game::video`) must load `libvlc.dll` dynamically at runtime via Win32 FFI (`LoadLibraryW` / `GetProcAddress`) so CI builds require zero VLC SDK headers or `.lib` files.
 - **Excluded Scope**: `ChartEditorState` and `StageEditorState` are intentionally excluded; `sserafim` (`spaghetti`) stage/song support is included.
+- **Reference Directories (Local Only, Do Not Hardcode in Rust Code/Tests)**:
+  - Reference game install: `C:\Users\mamta\Downloads\stuff\funkin-windows-64bit`
+  - Reference assets: `C:\Users\mamta\Downloads\stuff\funkin-windows-64bit\assets`
+  - Reference Haxe source code: `C:\Users\mamta\Downloads\base-source`
 - **Orientation**: Read `ARCHITECTURE.md` at the start of a new session for the crate map and current implementation status.
 
 ## 2. Pinned Crate Versions (Verified on crates.io & docs.rs)

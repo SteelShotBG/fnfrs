@@ -9,6 +9,7 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
 
 jobs:
   build-windows:
@@ -16,6 +17,8 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
 
       - name: Install stable Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -24,14 +27,22 @@ jobs:
 
       - name: Cache Cargo registry and build artifacts
         uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
 
       - name: Run Clippy
+        id: clippy
+        continue-on-error: true
         run: cargo clippy --workspace --all-targets --keep-going -- -D warnings
 
       - name: Run tests
-        run: cargo test --workspace --no-fail-fast
+        id: test
+        continue-on-error: true
+        run: cargo test --workspace --no-fail-fast --keep-going
 
       - name: Build release binary
+        id: build
+        continue-on-error: true
         run: cargo build --release --bin fnfrs-app
 
       - name: Check formatting (advisory)
@@ -39,12 +50,19 @@ jobs:
         run: cargo fmt --all -- --check
 
       - name: Package fnfrs.exe
+        if: steps.build.outcome == 'success'
         shell: pwsh
         run: Copy-Item -Path "target/release/fnfrs-app.exe" -Destination "fnfrs.exe"
 
       - name: Upload fnfrs.exe artifact
+        if: steps.build.outcome == 'success'
         uses: actions/upload-artifact@v4
         with:
           name: fnfrs-windows-x64
           path: fnfrs.exe
           if-no-files-found: error
+
+      - name: Fail if Clippy, tests, or release build failed
+        if: steps.clippy.outcome == 'failure' || steps.test.outcome == 'failure' || steps.build.outcome == 'failure'
+        shell: pwsh
+        run: exit 1

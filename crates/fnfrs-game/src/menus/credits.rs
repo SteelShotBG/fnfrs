@@ -15,7 +15,6 @@ use fnfrs_render::{
     BitmapFont, BlendMode, FilterMode, GpuContext, SpriteBatcher, SpriteInstance, TextAlign,
     TextStyle, TextureHandle,
 };
-use serde::Deserialize;
 
 use super::{load_menu_image, MenuCommand, MenuInputState};
 
@@ -27,22 +26,10 @@ const CREDITS_BASE_SPEED: f32 = 100.0;
 const CREDITS_FAST_SPEED: f32 = CREDITS_BASE_SPEED * 4.0;
 const LAVENDER_COLOR: [f32; 4] = [0.71, 0.49, 0.86, 0.1];
 
-#[derive(Debug, Deserialize)]
-struct CreditsFile {
-    #[serde(default)]
-    entries: Vec<CreditsFileRole>,
-}
-
-#[derive(Debug, Deserialize)]
+#[derive(Debug)]
 struct CreditsFileRole {
     header: Option<String>,
-    #[serde(default)]
-    body: Vec<CreditsFileMember>,
-}
-
-#[derive(Debug, Deserialize)]
-struct CreditsFileMember {
-    line: String,
+    body: Vec<String>,
 }
 
 #[derive(Debug)]
@@ -80,7 +67,7 @@ impl CreditsScreenState {
             }
             for member in role.body {
                 lines.push(RenderedCreditLine {
-                    text: member.line,
+                    text: member,
                     y_offset: cursor_y,
                     is_header: false,
                 });
@@ -166,9 +153,31 @@ fn load_credits_roles(assets: &AssetLocator) -> Vec<CreditsFileRole> {
     ];
     for path in candidates {
         if let Ok(raw) = fs::read_to_string(&path) {
-            if let Ok(parsed) = serde_json::from_str::<CreditsFile>(&raw) {
-                if !parsed.entries.is_empty() {
-                    return parsed.entries;
+            if let Ok(val) = serde_json::from_str::<serde_json::Value>(&raw) {
+                if let Some(arr) = val.get("entries").and_then(|v| v.as_array()) {
+                    let mut parsed = Vec::with_capacity(arr.len());
+                    for entry in arr {
+                        let header = entry
+                            .get("header")
+                            .and_then(|v| v.as_str())
+                            .map(str::to_owned);
+                        let body = entry
+                            .get("body")
+                            .and_then(|v| v.as_array())
+                            .map(|items| {
+                                items
+                                    .iter()
+                                    .filter_map(|m| {
+                                        m.get("line").and_then(|v| v.as_str()).map(str::to_owned)
+                                    })
+                                    .collect()
+                            })
+                            .unwrap_or_default();
+                        parsed.push(CreditsFileRole { header, body });
+                    }
+                    if !parsed.is_empty() {
+                        return parsed;
+                    }
                 }
             }
         }
@@ -179,29 +188,29 @@ fn load_credits_roles(assets: &AssetLocator) -> Vec<CreditsFileRole> {
         CreditsFileRole {
             header: Some("Friday Night Funkin'".to_owned()),
             body: vec![
-                CreditsFileMember { line: "ninjamuffin99 - Programmer".to_owned() },
-                CreditsFileMember { line: "PhantomArcade - Animator & Director".to_owned() },
-                CreditsFileMember { line: "Kawai Sprite - Musician".to_owned() },
-                CreditsFileMember { line: "evilsk8r - Artist".to_owned() },
+                "ninjamuffin99 - Programmer".to_owned(),
+                "PhantomArcade - Animator & Director".to_owned(),
+                "Kawai Sprite - Musician".to_owned(),
+                "evilsk8r - Artist".to_owned(),
             ],
         },
         CreditsFileRole {
             header: Some("The Funkin' Crew".to_owned()),
             body: vec![
-                CreditsFileMember { line: "EliteMasterEric - Lead Programmer".to_owned() },
-                CreditsFileMember { line: "MtH - Charting & Programming".to_owned() },
-                CreditsFileMember { line: "JohnnyUtah - Voice Acting & Art".to_owned() },
-                CreditsFileMember { line: "Jenny - Illustration & Animation".to_owned() },
-                CreditsFileMember { line: "Bassetfilms - Music & Sound".to_owned() },
-                CreditsFileMember { line: "Saster - Music".to_owned() },
-                CreditsFileMember { line: "Saruky - Music".to_owned() },
+                "EliteMasterEric - Lead Programmer".to_owned(),
+                "MtH - Charting & Programming".to_owned(),
+                "JohnnyUtah - Voice Acting & Art".to_owned(),
+                "Jenny - Illustration & Animation".to_owned(),
+                "Bassetfilms - Music & Sound".to_owned(),
+                "Saster - Music".to_owned(),
+                "Saruky - Music".to_owned(),
             ],
         },
         CreditsFileRole {
             header: Some("fnfrs Rust Port".to_owned()),
             body: vec![
-                CreditsFileMember { line: "Zero-Allocation V-Slice Engine".to_owned() },
-                CreditsFileMember { line: "wgpu + winit + cpal + symphonia".to_owned() },
+                "Zero-Allocation V-Slice Engine".to_owned(),
+                "wgpu + winit + cpal + symphonia".to_owned(),
             ],
         },
     ]
