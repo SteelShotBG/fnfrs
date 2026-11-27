@@ -417,6 +417,7 @@ pub(crate) fn update_and_render_gameplay(
     pause_input.down_held = gp.pause_down_held;
     pause_input.shift_held = gp.pause_shift_held;
 
+    let mut finish_song_now = false;
     if gp.scene.pause_menu.is_open {
         let action = gp.scene.pause_menu.update(elapsed_s, pause_input);
         if gp.scene.pause_menu.scroll_sfx_queued {
@@ -430,7 +431,8 @@ pub(crate) fn update_and_render_gameplay(
             state.save.options.audio_offset_ms = gp.scene.pause_menu.global_offset_ms;
             let _ = state.save.save_to_disk();
         }
-        if gp.scene.pause_menu.is_open {
+        let mut finish_song_now = false;
+    if gp.scene.pause_menu.is_open {
             if let Some(engine) = audio.as_deref_mut() {
                 let _ = engine.set_pause_loop_gain(gp.scene.pause_menu.music_gain);
             }
@@ -495,9 +497,7 @@ pub(crate) fn update_and_render_gameplay(
                     dispatch_cutscene_audio(&gp.level_assets, audio.as_deref_mut(), gp.cutscene_sfx, q);
                     if gp.waiting_post_cutscene {
                         gp.waiting_post_cutscene = false;
-                        if complete_song_or_advance_story(state, audio, now) {
-                            return;
-                        }
+                        finish_song_now = true;
                     } else {
                         gp.scene.session.is_paused = false;
                         gp.scene.countdown.set_paused(false);
@@ -547,9 +547,7 @@ pub(crate) fn update_and_render_gameplay(
         if step.finished {
             if gp.waiting_post_cutscene {
                 gp.waiting_post_cutscene = false;
-                if complete_song_or_advance_story(state, audio, now) {
-                    return;
-                }
+                finish_song_now = true;
             } else {
                 gp.scene.session.is_paused = false;
                 gp.scene.countdown.set_paused(false);
@@ -578,7 +576,7 @@ pub(crate) fn update_and_render_gameplay(
             .game_over
             .update(elapsed_s, overlay_accept, overlay_back);
         if let Some(cue) = go_events.audio_cue {
-            handle_game_over_audio(&gp.level_assets, gp, audio.as_deref_mut(), cue);
+            handle_game_over_audio(gp, audio.as_deref_mut(), cue);
         }
         if gp.scene.game_over.phase == GameOverPhase::DeathLoop && gp.song_audio_replaced {
             if let Some(engine) = audio.as_deref_mut() {
@@ -599,6 +597,13 @@ pub(crate) fn update_and_render_gameplay(
             }
         }
     }
+
+    if finish_song_now && complete_song_or_advance_story(state, audio.as_deref_mut(), now) {
+        return;
+    }
+    let Some(gp) = state.gameplay.as_mut() else {
+        return;
+    };
 
     let raw_song_pos_ms = if gp.scene.countdown.active {
         gp.scene.countdown.song_time_ms
@@ -690,7 +695,7 @@ pub(crate) fn update_and_render_gameplay(
             return;
         }
     } else if let Some(cue) = step_events.game_over_events.audio_cue {
-        handle_game_over_audio(&gp.level_assets, gp, audio, cue);
+        handle_game_over_audio(gp, audio, cue);
     }
 
     let Some(gp) = state.gameplay.as_mut() else {

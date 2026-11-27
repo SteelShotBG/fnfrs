@@ -123,7 +123,6 @@ fn start_gameover_music(
 }
 
 pub(crate) fn handle_game_over_audio(
-    assets: &AssetLocator,
     gp: &mut ActiveGameplay,
     audio: Option<&mut AudioEngine>,
     cue: GameOverAudioCue,
@@ -131,6 +130,7 @@ pub(crate) fn handle_game_over_audio(
     let Some(engine) = audio else {
         return;
     };
+    let assets = &gp.level_assets;
     match cue {
         GameOverAudioCue::PlayLossSfx => {
             let _ = engine.pause();
