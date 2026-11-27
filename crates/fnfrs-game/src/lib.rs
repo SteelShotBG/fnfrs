@@ -47,7 +47,7 @@ pub use play_state::{
     GameplaySfxSlots, PlayConfig, PlayScene, PlaySceneConfig, PlaySceneStepEvents, PlaySession,
     PlayStepEvents,
 };
-pub use popup::{ComboDigitPopUp, JudgementPopUp, PopUpPool};
+pub use popup::{ComboDigitPopUp, JudgementPopUp, PopUpOrderedItem, PopUpPool};
 pub use scripts::{
     NativeScriptHost, NoteKindTag, RainShaderParams, ScriptSfxCue, ScriptSfxSlots,
     ScriptStepOutput,

@@ -7,7 +7,6 @@
 - **Keep Assets Out of Git**: Never commit game assets (`assets/`), save files (`save.json`), compiled binaries (`*.exe`, `*.dll`), or `target/`. Ensure `.gitignore` ignores `/assets/`, `/target/`, and `*.exe`.
 - **Runtime `libvlc.dll` Only**: Video cutscenes (`fnfrs-game::video`) must load `libvlc.dll` dynamically at runtime via Win32 FFI (`LoadLibraryW` / `GetProcAddress`) so CI builds require zero VLC SDK headers or `.lib` files.
 - **Excluded Scope**: `ChartEditorState` and `StageEditorState` are intentionally excluded; `sserafim` (`spaghetti`) stage/song support is included.
-- **Pre-Push Sanity Checks**: Because no local Rust compiler exists, run lightweight Python static checks (delimiter balance, call arity, unused imports) before committing and pushing to `main`.
 - **Orientation**: Read `ARCHITECTURE.md` at the start of a new session for the crate map and current implementation status.
 
 ## 2. Pinned Crate Versions (Verified on crates.io & docs.rs)

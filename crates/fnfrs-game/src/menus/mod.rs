@@ -2,6 +2,7 @@
 //! zero per-frame heap allocations inside `update` / `draw`.
 
 pub mod char_select;
+pub mod credits;
 pub mod freeplay;
 pub mod main_menu;
 pub mod options;
@@ -20,6 +21,7 @@ use fnfrs_render::{
 };
 
 pub use char_select::CharSelectScreenState;
+pub use credits::CreditsScreenState;
 pub use freeplay::FreeplayScreenState;
 pub use main_menu::{MainMenuChoice, MainMenuScreenState};
 pub use options::OptionsScreenState;
@@ -27,16 +29,21 @@ pub use story_menu::StoryMenuScreenState;
 pub use title::TitleScreenState;
 
 /// Common navigation/audio actions returned by menu state `update()` calls.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum MenuCommand {
     None,
     PlaySfx(&'static str),
+    PlaySfxVol(&'static str, f32),
     EnterMainMenu,
     EnterTitle,
+    CancelToTitle,
     EnterStoryMenu,
     EnterFreeplay,
     EnterOptions,
+    EnterCredits,
+    ExitCreditsToMainMenu,
     EnterCharSelect,
+    OpenUrl(&'static str),
     SavePreferencesChanged,
     StartFreeplaySong {
         song_id: String,
@@ -65,6 +72,7 @@ pub struct MenuInputState {
     pub left_held: bool,
     pub right_held: bool,
     pub accept_pressed: bool,
+    pub accept_held: bool,
     pub back_pressed: bool,
     pub tab_pressed: bool,
     pub fav_pressed: bool,

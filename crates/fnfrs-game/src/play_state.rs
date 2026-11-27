@@ -745,94 +745,98 @@ impl PlaySession {
         self.player_strumline
             .draw(bg_sprites, fg_sprites, mesh_batcher, style, note_assets, song_pos);
 
-        // Judgement & combo popups (real V-Slice `ui/popup/*` PNG sprites, falling back to text).
+        // Judgement & combo popups drawn strictly in chronological spawn order so
+        // newer popups never render behind older still-alive popups (`PopUpStuff.hx`).
         if !self.hide_popups {
-            for (_, rating) in self.popups.ratings.iter_alive() {
-            let drawn_sprite = note_assets
-                .and_then(|na| na.popup_rating_sprite(rating.judgement))
-                .and_then(|asset| asset.tex.map(|tex| (asset, tex)));
-            if let Some((asset, (tex, tex_sz))) = drawn_sprite {
-                let sz = [tex_sz[0] * asset.scale, tex_sz[1] * asset.scale];
-                let pos = if asset.is_pixel || rating.is_pixel {
-                    [rating.x.round(), rating.y.round()]
-                } else {
-                    [rating.x, rating.y]
-                };
-                let filter = if asset.is_pixel || rating.is_pixel {
-                    fnfrs_render::FilterMode::Nearest
-                } else {
-                    fnfrs_render::FilterMode::Linear
-                };
-                fg_sprites.push(
-                    tex,
-                    fnfrs_render::BlendMode::Normal,
-                    filter,
-                    fnfrs_render::SpriteInstance::new(pos, sz)
-                        .with_color([1.0, 1.0, 1.0, rating.alpha * asset.alpha]),
-                );
-            } else {
-                let (label, color): (&str, [f32; 4]) = match rating.judgement {
-                    Judgement::Sick => ("SICK!", [0.22, 0.94, 1.0, rating.alpha]),
-                    Judgement::Good => ("GOOD!", [0.35, 0.95, 0.45, rating.alpha]),
-                    Judgement::Bad => ("BAD", [1.0, 0.72, 0.25, rating.alpha]),
-                    Judgement::Shit => ("SHIT", [0.85, 0.30, 0.30, rating.alpha]),
-                    Judgement::Miss => ("MISS", [0.75, 0.15, 0.20, rating.alpha]),
-                };
-                font.draw_bytes_outlined(
-                    fg_sprites,
-                    font_tex,
-                    label.as_bytes(),
-                    [(rating.x + 80.0).round(), (rating.y + 30.0).round()],
-                    &TextStyle {
-                        scale: if font.line_height() <= 10.0 { 4.0 } else { 2.0 },
-                        color,
-                        ..Default::default()
-                    },
-                    [0.0, 0.0, 0.0, 1.0],
-                );
+            let mut digit_byte = [b'0'; 1];
+            for item in self.popups.iter_ordered() {
+                match item {
+                    crate::popup::PopUpOrderedItem::Rating(rating) => {
+                        let drawn_sprite = note_assets
+                            .and_then(|na| na.popup_rating_sprite(rating.judgement))
+                            .and_then(|asset| asset.tex.map(|tex| (asset, tex)));
+                        if let Some((asset, (tex, tex_sz))) = drawn_sprite {
+                            let sz = [tex_sz[0] * asset.scale, tex_sz[1] * asset.scale];
+                            let pos = if asset.is_pixel || rating.is_pixel {
+                                [rating.x.round(), rating.y.round()]
+                            } else {
+                                [rating.x, rating.y]
+                            };
+                            let filter = if asset.is_pixel || rating.is_pixel {
+                                fnfrs_render::FilterMode::Nearest
+                            } else {
+                                fnfrs_render::FilterMode::Linear
+                            };
+                            fg_sprites.push(
+                                tex,
+                                fnfrs_render::BlendMode::Normal,
+                                filter,
+                                fnfrs_render::SpriteInstance::new(pos, sz)
+                                    .with_color([1.0, 1.0, 1.0, rating.alpha * asset.alpha]),
+                            );
+                        } else {
+                            let (label, color): (&str, [f32; 4]) = match rating.judgement {
+                                Judgement::Sick => ("SICK!", [0.22, 0.94, 1.0, rating.alpha]),
+                                Judgement::Good => ("GOOD!", [0.35, 0.95, 0.45, rating.alpha]),
+                                Judgement::Bad => ("BAD", [1.0, 0.72, 0.25, rating.alpha]),
+                                Judgement::Shit => ("SHIT", [0.85, 0.30, 0.30, rating.alpha]),
+                                Judgement::Miss => ("MISS", [0.75, 0.15, 0.20, rating.alpha]),
+                            };
+                            font.draw_bytes_outlined(
+                                fg_sprites,
+                                font_tex,
+                                label.as_bytes(),
+                                [(rating.x + 80.0).round(), (rating.y + 30.0).round()],
+                                &TextStyle {
+                                    scale: if font.line_height() <= 10.0 { 4.0 } else { 2.0 },
+                                    color,
+                                    ..Default::default()
+                                },
+                                [0.0, 0.0, 0.0, 1.0],
+                            );
+                        }
+                    }
+                    crate::popup::PopUpOrderedItem::Digit(digit) => {
+                        let drawn_sprite = note_assets
+                            .and_then(|na| na.popup_digit_sprite(digit.digit))
+                            .and_then(|asset| asset.tex.map(|tex| (asset, tex)));
+                        if let Some((asset, (tex, tex_sz))) = drawn_sprite {
+                            let sz = [tex_sz[0] * asset.scale, tex_sz[1] * asset.scale];
+                            let pos = if asset.is_pixel || digit.is_pixel {
+                                [digit.x.round(), digit.y.round()]
+                            } else {
+                                [digit.x, digit.y]
+                            };
+                            let filter = if asset.is_pixel || digit.is_pixel {
+                                fnfrs_render::FilterMode::Nearest
+                            } else {
+                                fnfrs_render::FilterMode::Linear
+                            };
+                            fg_sprites.push(
+                                tex,
+                                fnfrs_render::BlendMode::Normal,
+                                filter,
+                                fnfrs_render::SpriteInstance::new(pos, sz)
+                                    .with_color([1.0, 1.0, 1.0, digit.alpha * asset.alpha]),
+                            );
+                        } else {
+                            digit_byte[0] = b'0' + (digit.digit % 10);
+                            font.draw_bytes_outlined(
+                                fg_sprites,
+                                font_tex,
+                                &digit_byte,
+                                [digit.x.round(), digit.y.round()],
+                                &TextStyle {
+                                    scale: if font.line_height() <= 10.0 { 3.5 } else { 1.75 },
+                                    color: [1.0, 1.0, 1.0, digit.alpha],
+                                    ..Default::default()
+                                },
+                                [0.0, 0.0, 0.0, 1.0],
+                            );
+                        }
+                    }
+                }
             }
-        }
-
-        let mut digit_byte = [b'0'; 1];
-        for (_, digit) in self.popups.digits.iter_alive() {
-            let drawn_sprite = note_assets
-                .and_then(|na| na.popup_digit_sprite(digit.digit))
-                .and_then(|asset| asset.tex.map(|tex| (asset, tex)));
-            if let Some((asset, (tex, tex_sz))) = drawn_sprite {
-                let sz = [tex_sz[0] * asset.scale, tex_sz[1] * asset.scale];
-                let pos = if asset.is_pixel || digit.is_pixel {
-                    [digit.x.round(), digit.y.round()]
-                } else {
-                    [digit.x, digit.y]
-                };
-                let filter = if asset.is_pixel || digit.is_pixel {
-                    fnfrs_render::FilterMode::Nearest
-                } else {
-                    fnfrs_render::FilterMode::Linear
-                };
-                fg_sprites.push(
-                    tex,
-                    fnfrs_render::BlendMode::Normal,
-                    filter,
-                    fnfrs_render::SpriteInstance::new(pos, sz)
-                        .with_color([1.0, 1.0, 1.0, digit.alpha * asset.alpha]),
-                );
-            } else {
-                digit_byte[0] = b'0' + (digit.digit % 10);
-                font.draw_bytes_outlined(
-                    fg_sprites,
-                    font_tex,
-                    &digit_byte,
-                    [digit.x.round(), digit.y.round()],
-                    &TextStyle {
-                        scale: if font.line_height() <= 10.0 { 3.5 } else { 1.75 },
-                        color: [1.0, 1.0, 1.0, digit.alpha],
-                        ..Default::default()
-                    },
-                    [0.0, 0.0, 0.0, 1.0],
-                );
-            }
-        }
         }
 
         // V-Slice health bar (`PlayState.initHealthBar`, `Constants.COLOR_HEALTH_BAR_*`).
@@ -1009,6 +1013,12 @@ impl ScrollSpeedTween {
     }
 }
 
+#[derive(Debug, Clone)]
+struct AlternateHealthIcon {
+    char_id: i32,
+    icon: HealthIcon,
+}
+
 /// Complete V-Slice gameplay scene coordinating [`PlaySession`], [`Stage`],
 /// [`BaseCharacter`]s, [`CameraRig`], [`SongEventQueue`], [`HealthIcon`]s,
 /// [`CountdownController`], [`PauseMenuState`], [`GameOverState`], and
@@ -1024,6 +1034,9 @@ pub struct PlayScene {
     pub event_queue: SongEventQueue,
     pub icon_p1: HealthIcon,
     pub icon_p2: HealthIcon,
+    default_p1_id: String,
+    default_p2_id: String,
+    alt_icons: Vec<AlternateHealthIcon>,
     pub countdown: CountdownController,
     pub countdown_assets: Option<CountdownAssets>,
     pub pause_menu: PauseMenuState,
@@ -1083,6 +1096,9 @@ impl PlayScene {
 
         let base_scroll_speed = session.config.scroll_speed.max(0.1);
 
+        let default_p1_id = icon_p1.character_id.clone();
+        let default_p2_id = icon_p2.character_id.clone();
+
         Self {
             session,
             stage,
@@ -1093,6 +1109,9 @@ impl PlayScene {
             event_queue,
             icon_p1,
             icon_p2,
+            default_p1_id,
+            default_p2_id,
+            alt_icons: Vec::new(),
             countdown,
             countdown_assets,
             pause_menu,
@@ -1126,6 +1145,12 @@ impl PlayScene {
         self.scripts = scripts;
     }
 
+    /// Registers a preloaded alternate health icon at song load time for
+    /// zero-allocation runtime swaps triggered by `SetHealthIcon` events.
+    pub fn register_alternate_icon(&mut self, char_id: i32, icon: HealthIcon) {
+        self.alt_icons.push(AlternateHealthIcon { char_id, icon });
+    }
+
     /// Updates cached health bar dimensions used to anchor [`HealthIcon`]s.
     pub fn set_health_bar_size(&mut self, width: f32, height: f32) {
         self.health_bar_size = [width.max(10.0), height.max(10.0)];
@@ -1140,6 +1165,28 @@ impl PlayScene {
         song_duration_ms: Option<f64>,
         reset_death_count: bool,
     ) {
+        swap_health_icon(
+            &mut self.icon_p1,
+            &mut self.alt_icons,
+            0,
+            &self.default_p1_id,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+        swap_health_icon(
+            &mut self.icon_p2,
+            &mut self.alt_icons,
+            1,
+            &self.default_p2_id,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
         self.session = new_session;
         self.scene_config.song_name.clear();
         self.scene_config.song_name.push_str(song_name);
@@ -1315,6 +1362,9 @@ impl PlayScene {
             let opponent_strumline = &mut self.session.opponent_strumline;
             let player_tween = &mut self.player_scroll_tween;
             let opponent_tween = &mut self.opponent_scroll_tween;
+            let icon_p1 = &mut self.icon_p1;
+            let icon_p2 = &mut self.icon_p2;
+            let alt_icons = &mut self.alt_icons;
             let scripts = &mut self.scripts;
 
             let mut pending_flash_dur: Option<f32> = None;
@@ -1351,6 +1401,9 @@ impl PlayScene {
                     opponent_strumline,
                     player_tween,
                     opponent_tween,
+                    icon_p1,
+                    icon_p2,
+                    alt_icons,
                 );
             });
             if let Some(dur) = pending_flash_dur {
@@ -1757,6 +1810,51 @@ fn initial_camera_focus(
 }
 
 #[allow(clippy::too_many_arguments)]
+fn swap_health_icon(
+    active: &mut HealthIcon,
+    alt_icons: &mut [AlternateHealthIcon],
+    char_id: i32,
+    icon_id: &str,
+    scale: Option<f32>,
+    flip_x: Option<bool>,
+    is_pixel: Option<bool>,
+    should_bop: Option<bool>,
+    offsets: Option<[f32; 2]>,
+) {
+    if !active.character_id.eq_ignore_ascii_case(icon_id) {
+        if let Some(entry) = alt_icons
+            .iter_mut()
+            .find(|a| a.char_id == char_id && a.icon.character_id.eq_ignore_ascii_case(icon_id))
+        {
+            let prev_x = active.x;
+            let prev_y = active.y;
+            let prev_bop = active.bop_scale_mult;
+            let prev_angle = active.angle_deg;
+            std::mem::swap(active, &mut entry.icon);
+            active.x = prev_x;
+            active.y = prev_y;
+            active.bop_scale_mult = prev_bop;
+            active.angle_deg = prev_angle;
+        }
+    }
+    if let Some(s) = scale {
+        active.base_scale = s.max(0.05);
+    }
+    if let Some(fx) = flip_x {
+        active.flip_x = if active.is_player { !fx } else { fx };
+    }
+    if let Some(px) = is_pixel {
+        active.is_pixel = px;
+    }
+    if let Some(bop) = should_bop {
+        active.should_bop = bop;
+    }
+    if let Some(off) = offsets {
+        active.offsets = off;
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 fn apply_song_event(
     ev: &QueuedSongEvent,
     step_len_ms: f64,
@@ -1770,6 +1868,9 @@ fn apply_song_event(
     opponent_strumline: &mut Strumline,
     player_tween: &mut ScrollSpeedTween,
     opponent_tween: &mut ScrollSpeedTween,
+    icon_p1: &mut HealthIcon,
+    icon_p2: &mut HealthIcon,
+    alt_icons: &mut [AlternateHealthIcon],
 ) {
     match &ev.action {
         GameEventAction::FocusCamera {
@@ -1898,6 +1999,39 @@ fn apply_song_event(
                 }
             }
         }
+        GameEventAction::SetHealthIcon {
+            char_id,
+            icon_id,
+            scale,
+            flip_x,
+            is_pixel,
+            should_bop,
+            offsets,
+        } => match *char_id {
+            0 => swap_health_icon(
+                icon_p1,
+                alt_icons,
+                0,
+                icon_id,
+                *scale,
+                *flip_x,
+                *is_pixel,
+                *should_bop,
+                *offsets,
+            ),
+            1 => swap_health_icon(
+                icon_p2,
+                alt_icons,
+                1,
+                icon_id,
+                *scale,
+                *flip_x,
+                *is_pixel,
+                *should_bop,
+                *offsets,
+            ),
+            _ => {}
+        },
         GameEventAction::Custom { .. } => {}
     }
 }

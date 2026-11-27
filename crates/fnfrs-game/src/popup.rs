@@ -109,6 +109,20 @@ impl Default for ComboDigitPopUp {
     }
 }
 
+/// Chronological spawn entry for ordering popup draws oldest-to-newest.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PopUpOrderKey {
+    Rating(PoolHandle),
+    Digit(PoolHandle),
+}
+
+/// Borrowed popup item yielded in exact chronological spawn order.
+#[derive(Debug, Clone, Copy)]
+pub enum PopUpOrderedItem<'a> {
+    Rating(&'a JudgementPopUp),
+    Digit(&'a ComboDigitPopUp),
+}
+
 /// Pre-allocated pool managing judgement banners and combo digits with zero
 /// per-frame heap allocations (`PopUpStuff.hx`).
 #[derive(Debug)]
@@ -116,6 +130,7 @@ pub struct PopUpPool {
     pub ratings: FixedPool<JudgementPopUp>,
     pub digits: FixedPool<ComboDigitPopUp>,
     pub offsets: [f32; 2],
+    order: Vec<PopUpOrderKey>,
     rng: FastRng,
 }
 
@@ -133,6 +148,7 @@ impl PopUpPool {
             ratings: FixedPool::with_capacity(rating_cap, |_| JudgementPopUp::default()),
             digits: FixedPool::with_capacity(digit_cap, |_| ComboDigitPopUp::default()),
             offsets: [0.0, 0.0],
+            order: Vec::with_capacity(rating_cap + digit_cap),
             rng: FastRng::new(0xF4F5_2026),
         }
     }
@@ -141,6 +157,49 @@ impl PopUpPool {
     pub fn clear(&mut self) {
         self.ratings.clear();
         self.digits.clear();
+        self.order.clear();
+    }
+
+    /// Iterates active popups (both ratings and combo digits) strictly in spawn
+    /// order (`oldest -> newest`) with zero heap allocations.
+    #[inline]
+    pub fn iter_ordered(&self) -> impl Iterator<Item = PopUpOrderedItem<'_>> {
+        self.order.iter().filter_map(|entry| match *entry {
+            PopUpOrderKey::Rating(h) => self.ratings.get(h).map(PopUpOrderedItem::Rating),
+            PopUpOrderKey::Digit(h) => self.digits.get(h).map(PopUpOrderedItem::Digit),
+        })
+    }
+
+    fn evict_oldest_rating(&mut self) -> bool {
+        let Some(pos) = self
+            .order
+            .iter()
+            .position(|entry| matches!(entry, PopUpOrderKey::Rating(_)))
+        else {
+            return false;
+        };
+        if let PopUpOrderKey::Rating(handle) = self.order.remove(pos) {
+            self.ratings.release(handle);
+            true
+        } else {
+            false
+        }
+    }
+
+    fn evict_oldest_digit(&mut self) -> bool {
+        let Some(pos) = self
+            .order
+            .iter()
+            .position(|entry| matches!(entry, PopUpOrderKey::Digit(_)))
+        else {
+            return false;
+        };
+        if let PopUpOrderKey::Digit(handle) = self.order.remove(pos) {
+            self.digits.release(handle);
+            true
+        } else {
+            false
+        }
     }
 
     /// Spawns a judgement rating sprite (`PopUpStuff.displayRating`).
@@ -152,9 +211,18 @@ impl PopUpPool {
         beat_length_ms: f64,
         is_pixel: bool,
     ) {
-        let Some((_, slot)) = self.ratings.acquire() else {
+        if self.ratings.capacity() == 0 {
+            return;
+        }
+        if self.ratings.active_count() >= self.ratings.capacity() && !self.evict_oldest_rating() {
+            return;
+        }
+        let Some((handle, slot)) = self.ratings.acquire() else {
             return;
         };
+        if self.order.len() < self.order.capacity() {
+            self.order.push(PopUpOrderKey::Rating(handle));
+        }
 
         let mut x = VIRTUAL_WIDTH * 0.474 - sprite_size[0] * 0.5;
         let mut y = (VIRTUAL_HEIGHT * 0.45 - 60.0) - sprite_size[1] * 0.5;
@@ -187,6 +255,9 @@ impl PopUpPool {
         beat_length_ms: f64,
         is_pixel: bool,
     ) {
+        if self.digits.capacity() == 0 {
+            return;
+        }
         let mut digits_buf = [0u8; 10];
         let mut count = 0usize;
         let mut tmp = combo;
@@ -203,9 +274,15 @@ impl PopUpPool {
 
         let fade_delay_s = (beat_length_ms * 0.002) as f32;
         for (i, &digit) in digits_buf.iter().take(count).enumerate() {
-            let Some((_, slot)) = self.digits.acquire() else {
+            if self.digits.active_count() >= self.digits.capacity() && !self.evict_oldest_digit() {
+                break;
+            }
+            let Some((handle, slot)) = self.digits.acquire() else {
                 break;
             };
+            if self.order.len() < self.order.capacity() {
+                self.order.push(PopUpOrderKey::Digit(handle));
+            }
             let da_loop = (i + 1) as f32;
             let x = (VIRTUAL_WIDTH * 0.507) - (36.0 * da_loop) - 65.0
                 + self.offsets[0]
@@ -288,6 +365,15 @@ impl PopUpPool {
         for handle in expired_digits.iter().take(expired_d_len).flatten() {
             self.digits.release(*handle);
         }
+
+        if expired_r_len > 0 || expired_d_len > 0 {
+            let ratings = &self.ratings;
+            let digits = &self.digits;
+            self.order.retain(|entry| match *entry {
+                PopUpOrderKey::Rating(h) => ratings.get(h).is_some(),
+                PopUpOrderKey::Digit(h) => digits.get(h).is_some(),
+            });
+        }
     }
 }
 
@@ -311,5 +397,35 @@ mod tests {
 
         assert_eq!(pool.ratings.active_count(), 0);
         assert_eq!(pool.digits.active_count(), 0);
+    }
+
+    #[test]
+    fn chronological_order_preserved_across_slot_reuse() {
+        let mut pool = PopUpPool::with_capacity(4, 8);
+        // Spawn combo 1 (digits in slots 0..3).
+        pool.spawn_rating(Judgement::Sick, [400.0, 150.0], [0.0, 0.0], 200.0, false);
+        pool.spawn_combo(12, [0.0, 0.0], 200.0, false);
+        // Advance slightly and spawn combo 2 (digits in slots 3..6), then expire combo 1 rating.
+        pool.update(0.5);
+        pool.spawn_rating(Judgement::Good, [400.0, 150.0], [0.0, 0.0], 500.0, false);
+        pool.spawn_combo(345, [0.0, 0.0], 500.0, false);
+        // Free first rating & force reuse of low slots when combo 3 spawns.
+        pool.update(0.8);
+        pool.spawn_rating(Judgement::Bad, [400.0, 150.0], [0.0, 0.0], 500.0, false);
+        pool.spawn_combo(9, [0.0, 0.0], 500.0, false);
+
+        // Surviving items must strictly follow chronological birth order (monotonically non-increasing age_s).
+        let mut prev_age = f32::INFINITY;
+        for item in pool.iter_ordered() {
+            let age = match item {
+                PopUpOrderedItem::Rating(r) => r.age_s,
+                PopUpOrderedItem::Digit(d) => d.age_s,
+            };
+            assert!(
+                age <= prev_age + 1e-6,
+                "newer popup ({age}) drew before older popup ({prev_age})"
+            );
+            prev_age = age;
+        }
     }
 }

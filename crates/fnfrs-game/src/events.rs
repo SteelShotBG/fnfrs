@@ -1,7 +1,7 @@
 //! Pre-parsed, zero-allocation V-Slice song event queue (`SongEventRegistry.hx`
 //! and `funkin/play/event/*`).
 
-use fnfrs_core::constants::{DEFAULT_ZOOM_RATE, STEPS_PER_BEAT};
+use fnfrs_core::constants::{DEFAULT_HEALTH_ICON, DEFAULT_ZOOM_RATE, STEPS_PER_BEAT};
 use fnfrs_core::schema::song::{SongChartData, SongEventData};
 
 use crate::camera::FlxEase;
@@ -97,6 +97,15 @@ pub enum GameEventAction {
         strumline: ScrollSpeedTarget,
         absolute: bool,
     },
+    SetHealthIcon {
+        char_id: i32,
+        icon_id: String,
+        scale: Option<f32>,
+        flip_x: Option<bool>,
+        is_pixel: Option<bool>,
+        should_bop: Option<bool>,
+        offsets: Option<[f32; 2]>,
+    },
     Custom {
         event_kind: String,
         value: serde_json::Value,
@@ -114,6 +123,7 @@ impl GameEventAction {
                 | Self::ZoomCamera { .. }
                 | Self::SetCameraBop { .. }
                 | Self::ScrollSpeed { .. }
+                | Self::SetHealthIcon { .. }
         )
     }
 
@@ -140,6 +150,7 @@ impl GameEventAction {
             "SetCameraBop" => parse_set_camera_bop(raw),
             "PlayAnimation" => parse_play_animation(raw),
             "ScrollSpeed" => parse_scroll_speed(raw),
+            "SetHealthIcon" => parse_set_health_icon(raw),
             _ => Self::Custom {
                 event_kind: raw.event_kind.clone(),
                 value: raw.value.clone(),
@@ -181,6 +192,13 @@ impl SongEventQueue {
         }
         events.sort_by(|a, b| a.time_ms.total_cmp(&b.time_ms));
         Self { events, cursor: 0 }
+    }
+
+    /// Returns all sorted events stored in this queue.
+    #[inline]
+    #[must_use]
+    pub fn events(&self) -> &[QueuedSongEvent] {
+        &self.events
     }
 
     /// Total number of pre-parsed events in the queue.
@@ -363,6 +381,36 @@ fn parse_scroll_speed(raw: &SongEventData) -> GameEventAction {
     }
 }
 
+fn parse_set_health_icon(raw: &SongEventData) -> GameEventAction {
+    let char_id = raw.get_i64("char").unwrap_or(0) as i32;
+    let icon_id = raw
+        .get_str("id")
+        .filter(|s| !s.is_empty())
+        .unwrap_or(DEFAULT_HEALTH_ICON)
+        .to_owned();
+    let scale = raw.get_f64("scale").map(|v| v as f32);
+    let flip_x = raw.get_bool("flipX");
+    let is_pixel = raw.get_bool("isPixel");
+    let should_bop = raw.get_bool("shouldBop");
+    let ox = raw.get_f64("offsetX").map(|v| v as f32);
+    let oy = raw.get_f64("offsetY").map(|v| v as f32);
+    let offsets = if ox.is_some() || oy.is_some() {
+        Some([ox.unwrap_or(0.0), oy.unwrap_or(0.0)])
+    } else {
+        None
+    };
+
+    GameEventAction::SetHealthIcon {
+        char_id,
+        icon_id,
+        scale,
+        flip_x,
+        is_pixel,
+        should_bop,
+        offsets,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -516,6 +564,23 @@ mod tests {
             GameEventAction::parse(&custom),
             GameEventAction::Custom { .. }
         ));
+
+        let set_icon: SongEventData = serde_json::from_str(
+            r#"{"t": 64500, "e": "SetHealthIcon", "v": {"char": 1, "id": "tankman-bloody"}}"#,
+        )
+        .expect("json");
+        assert_eq!(
+            GameEventAction::parse(&set_icon),
+            GameEventAction::SetHealthIcon {
+                char_id: 1,
+                icon_id: "tankman-bloody".to_owned(),
+                scale: None,
+                flip_x: None,
+                is_pixel: None,
+                should_bop: None,
+                offsets: None,
+            }
+        );
     }
 
     #[test]

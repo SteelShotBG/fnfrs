@@ -158,6 +158,7 @@ pub(crate) enum LoadedAtlasSource {
         atlas: AnimateAtlas,
         bounds_origin: [f32; 2],
         bounds_size: [f32; 2],
+        apply_stage_matrix: bool,
     },
 }
 
@@ -192,6 +193,7 @@ pub(crate) enum AnimFrames {
         total_frames: u32,
         bounds_origin: [f32; 2],
         bounds_size: [f32; 2],
+        stage_matrix: Option<Affine2D>,
     },
 }
 
@@ -503,6 +505,7 @@ impl AnimBank {
                 atlas_idx,
                 bounds_origin,
                 bounds_size,
+                stage_matrix,
                 ..
             } => {
                 let Some(LoadedAtlasSource::Animate { textures, .. }) = self.atlases.get(*atlas_idx)
@@ -515,6 +518,7 @@ impl AnimBank {
                     &self.evaluated_parts,
                     *bounds_origin,
                     *bounds_size,
+                    *stage_matrix,
                     params,
                     anim.flip_x,
                     anim.flip_y,
@@ -664,6 +668,7 @@ pub(crate) fn draw_animate_parts(
     parts: &[EvaluatedPart],
     bounds_origin: [f32; 2],
     bounds_size: [f32; 2],
+    stage_matrix: Option<Affine2D>,
     params: &AtlasDrawParams,
     anim_flip_x: bool,
     anim_flip_y: bool,
@@ -690,11 +695,22 @@ pub(crate) fn draw_animate_parts(
         tx: if flip_x { bounds_size[0] } else { 0.0 },
         ty: if flip_y { bounds_size[1] } else { 0.0 },
     };
+    let (stage_local, eff_bounds_size) = if let Some(sm) = stage_matrix {
+        let sx = sm.a;
+        let sy = sm.d;
+        let local = Affine2D::translation(bounds_origin[0] * sx, bounds_origin[1] * sy)
+            .mul(sm)
+            .mul(flip_affine)
+            .mul(shift_bounds);
+        (local, [bounds_size[0] * sx.abs(), bounds_size[1] * sy.abs()])
+    } else {
+        (flip_affine.mul(shift_bounds), bounds_size)
+    };
     let scale_affine = Affine2D::scale(params.scale[0], params.scale[1]);
 
     let rot_affine = if params.angle_deg.abs() > 1e-5 {
-        let cx = bounds_size[0] * params.scale[0] * 0.5;
-        let cy = bounds_size[1] * params.scale[1] * 0.5;
+        let cx = eff_bounds_size[0] * params.scale[0] * 0.5;
+        let cy = eff_bounds_size[1] * params.scale[1] * 0.5;
         Affine2D::translation(cx, cy)
             .mul(Affine2D::rotation(params.angle_deg.to_radians()))
             .mul(Affine2D::translation(-cx, -cy))
@@ -705,8 +721,7 @@ pub(crate) fn draw_animate_parts(
     let world_base = Affine2D::translation(untrimmed_x, untrimmed_y)
         .mul(rot_affine)
         .mul(scale_affine)
-        .mul(flip_affine)
-        .mul(shift_bounds);
+        .mul(stage_local);
 
     let cam_offset_x = VIRTUAL_WIDTH * 0.5 * (1.0 - params.cam_zoom)
         - params.cam_pos[0] * params.scroll_factor[0] * params.cam_zoom;
@@ -824,7 +839,7 @@ pub(crate) fn load_animate_source(
     assets: &AssetLocator,
     gpu: &mut GpuContext,
     key: &str,
-    _settings: Option<&TextureAtlasData>,
+    settings: Option<&TextureAtlasData>,
 ) -> Option<LoadedAtlasSource> {
     let dir = assets.animate_atlas_dir(key);
     let anim_json_path = dir.join("Animation.json");
@@ -878,6 +893,7 @@ pub(crate) fn load_animate_source(
         atlas,
         bounds_origin,
         bounds_size,
+        apply_stage_matrix: settings.is_some_and(|s| s.apply_stage_matrix),
     })
 }
 
@@ -931,6 +947,7 @@ pub(crate) fn build_loaded_anim(
             atlas,
             bounds_origin: atlas_bounds_origin,
             bounds_size: atlas_bounds_size,
+            apply_stage_matrix,
             ..
         } => {
             let prefix = anim.prefix.as_deref()?;
@@ -952,6 +969,19 @@ pub(crate) fn build_loaded_anim(
                     (total, sym_b)
                 }
             };
+            let stage_matrix = if *apply_stage_matrix {
+                let c = atlas.stage_matrix().to_cols_array();
+                Some(Affine2D {
+                    a: c[0],
+                    b: c[1],
+                    c: c[2],
+                    d: c[3],
+                    tx: c[4],
+                    ty: c[5],
+                })
+            } else {
+                None
+            };
             let indices: Vec<u32> = anim.frame_indices.iter().map(|&i| i as u32).collect();
             AnimFrames::Animate {
                 atlas_idx,
@@ -961,6 +991,7 @@ pub(crate) fn build_loaded_anim(
                 total_frames,
                 bounds_origin,
                 bounds_size,
+                stage_matrix,
             }
         }
     };
@@ -1132,6 +1163,7 @@ pub struct BaseCharacter {
     pub should_alternate: bool,
     pub has_danced: bool,
     pub can_play_other_anims: bool,
+    pub is_bloody: bool,
     pub idle_suffix: String,
     pub starting_animation: String,
     pub health_icon: Option<HealthIconData>,
@@ -1437,6 +1469,7 @@ impl BaseCharacter {
             should_alternate,
             has_danced: false,
             can_play_other_anims: true,
+            is_bloody: false,
             idle_suffix: String::new(),
             starting_animation: data.starting_animation,
             health_icon: data.health_icon,
@@ -1543,6 +1576,7 @@ impl BaseCharacter {
         self.hold_timer = 0.0;
         self.has_danced = false;
         self.can_play_other_anims = true;
+        self.is_bloody = false;
         self.last_dance_step = None;
         self.dance(true);
         if reset_camera {
@@ -1699,7 +1733,7 @@ impl BaseCharacter {
     }
 
     /// Plays an animation by name with `Bopper.correctAnimationName` `-suffix` fallback
-    /// and zero heap allocations.
+    /// and zero heap allocations. Also mirrors `tankman-bloody.hxc` (`redheadsAnim` -> `-bloody`).
     pub fn play_animation(&mut self, name: &str, restart: bool, ignore_other: bool) {
         if !self.can_play_other_anims {
             let same_restart = self.current_animation() == name && restart;
@@ -1711,10 +1745,20 @@ impl BaseCharacter {
                 return;
             }
         }
-        let Some(idx) = self.bank.resolve_with_fallback(name) else {
-            return;
+        let resolved = if self.is_bloody {
+            let mut buf = [0u8; 96];
+            format_stack_join(&mut buf, name, "-bloody")
+                .and_then(|bloody| self.bank.resolve_with_fallback(bloody))
+                .or_else(|| self.bank.resolve_with_fallback(name))
+        } else {
+            self.bank.resolve_with_fallback(name)
         };
-        self.play_anim_by_index(idx, restart, ignore_other);
+        if let Some(idx) = resolved {
+            self.play_anim_by_index(idx, restart, ignore_other);
+        }
+        if name == "redheadsAnim" {
+            self.is_bloody = true;
+        }
     }
 
     fn play_anim_by_index(&mut self, idx: usize, restart: bool, ignore_other: bool) {
@@ -1726,7 +1770,7 @@ impl BaseCharacter {
 
     /// Plays `sing{DIR}[miss][-{suffix}]` with zero heap allocations.
     pub fn play_sing_animation(&mut self, dir: NoteDirection, is_miss: bool, suffix: &str) {
-        if suffix.is_empty() {
+        if suffix.is_empty() && !self.is_bloody {
             let pre = if is_miss {
                 self.sing_miss_anims[dir.as_index()]
             } else {
@@ -1744,16 +1788,33 @@ impl BaseCharacter {
         let mut sb = StackBuf::new(&mut buf);
         let d = dir_upper(dir);
         let miss_part = if is_miss { "miss" } else { "" };
-        let res = if suffix.is_empty() {
-            write!(sb, "sing{d}{miss_part}")
-        } else {
-            write!(sb, "sing{d}{miss_part}-{suffix}")
+        let res = match (suffix.is_empty(), self.is_bloody) {
+            (true, false) => write!(sb, "sing{d}{miss_part}"),
+            (false, false) => write!(sb, "sing{d}{miss_part}-{suffix}"),
+            (true, true) => write!(sb, "sing{d}{miss_part}-bloody"),
+            (false, true) => write!(sb, "sing{d}{miss_part}-{suffix}-bloody"),
         };
         if res.is_ok() {
             let target = sb.as_str();
             if let Some(idx) = self.bank.resolve_with_fallback(target) {
                 self.play_anim_by_index(idx, true, false);
                 self.hold_timer = 0.0;
+                return;
+            }
+        }
+        if self.is_bloody {
+            let mut fallback_buf = [0u8; 96];
+            let mut fb = StackBuf::new(&mut fallback_buf);
+            let fb_res = if suffix.is_empty() {
+                write!(fb, "sing{d}{miss_part}")
+            } else {
+                write!(fb, "sing{d}{miss_part}-{suffix}")
+            };
+            if fb_res.is_ok() {
+                if let Some(idx) = self.bank.resolve_with_fallback(fb.as_str()) {
+                    self.play_anim_by_index(idx, true, false);
+                    self.hold_timer = 0.0;
+                }
             }
         }
     }
@@ -1835,16 +1896,26 @@ impl BaseCharacter {
             if played {
                 self.has_danced = !self.has_danced;
             }
-        } else if self.idle_suffix.is_empty() {
+        } else if self.idle_suffix.is_empty() && !self.is_bloody {
             if let Some(idx) = self.idle_anim {
                 self.play_anim_by_index(idx, force, false);
             }
         } else {
             let mut buf = [0u8; 96];
-            if let Some(name) = format_stack_join(&mut buf, "idle", &self.idle_suffix) {
-                if let Some(idx) = self.bank.resolve_with_fallback(name) {
-                    self.play_anim_by_index(idx, force, false);
-                }
+            let mut sb = StackBuf::new(&mut buf);
+            let res = match (self.idle_suffix.is_empty(), self.is_bloody) {
+                (true, false) => write!(sb, "idle"),
+                (false, false) => write!(sb, "idle{}", self.idle_suffix),
+                (true, true) => write!(sb, "idle-bloody"),
+                (false, true) => write!(sb, "idle{}-bloody", self.idle_suffix),
+            };
+            let resolved = if res.is_ok() {
+                self.bank.resolve_with_fallback(sb.as_str())
+            } else {
+                None
+            };
+            if let Some(idx) = resolved.or(self.idle_anim) {
+                self.play_anim_by_index(idx, force, false);
             }
         }
     }

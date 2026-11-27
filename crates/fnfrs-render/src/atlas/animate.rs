@@ -120,6 +120,7 @@ struct CompiledTimeline {
 #[derive(Debug, Clone)]
 pub struct AnimateAtlas {
     frame_rate: f32,
+    stage_matrix: Affine2,
     spritemaps: Vec<SpritemapInfo>,
     sprites: Vec<AnimateSprite>,
     sprite_index: FxHashMap<String, usize>,
@@ -211,9 +212,16 @@ impl AnimateAtlas {
             .and_then(|md| md.frt)
             .filter(|&fps| fps > 0.0)
             .unwrap_or(DEFAULT_FRAME_RATE);
+        let stage_matrix = raw_anim
+            .an
+            .stage_instance
+            .and_then(|sti| sti.si)
+            .map(|si| extract_affine(si.mx, si.m3d, si.pos))
+            .unwrap_or(Affine2::IDENTITY);
 
         Ok(Self {
             frame_rate,
+            stage_matrix,
             spritemaps,
             sprites,
             sprite_index,
@@ -222,6 +230,13 @@ impl AnimateAtlas {
             symbol_index,
             labels,
         })
+    }
+
+    /// Stage placement transform parsed from `AN.STI.SI` (identity if absent).
+    #[inline]
+    #[must_use]
+    pub fn stage_matrix(&self) -> Affine2 {
+        self.stage_matrix
     }
 
     /// Timeline frame rate from `MD.FRT` (defaults to `24.0`).
@@ -674,6 +689,14 @@ struct LegacyMetadata {
 struct LegacyAnimationNode {
     #[serde(rename = "TIMELINE")]
     timeline: LegacyTimeline,
+    #[serde(rename = "StageInstance", default)]
+    stage_instance: Option<LegacyStageInstance>,
+}
+
+#[derive(Deserialize)]
+struct LegacyStageInstance {
+    #[serde(rename = "SYMBOL_Instance", default)]
+    si: Option<LegacySymbolInstance>,
 }
 
 #[derive(Deserialize)]
@@ -874,9 +897,28 @@ impl LegacyTimeline {
 
 impl LegacyAnimationDoc {
     fn into_raw(self) -> RawAnimationDoc {
+        let stage_instance = self.animation.stage_instance.and_then(|sti| {
+            sti.si.map(|si| RawStageInstance {
+                si: Some(RawSymbolInstance {
+                    sn: si.sn,
+                    ff: si.ff,
+                    lp: si.lp,
+                    mx: None,
+                    m3d: si.m3d.map(LegacyMatrix3D::into_mx).map(|m| {
+                        [
+                            m[0], m[1], 0.0, 0.0, m[2], m[3], 0.0, 0.0, 0.0, 0.0, 1.0, 0.0,
+                            m[4], m[5], 0.0, 1.0,
+                        ]
+                    }),
+                    pos: None,
+                    color: si.color.map(LegacyColorEffect::into_raw),
+                }),
+            })
+        });
         RawAnimationDoc {
             an: RawAnimationNode {
                 timeline: self.animation.timeline.into_raw(),
+                stage_instance,
             },
             sd: self.symbol_dictionary.map(|sd| RawSymbolDict {
                 symbols: sd
@@ -915,6 +957,14 @@ struct RawMetadata {
 struct RawAnimationNode {
     #[serde(rename = "TL")]
     timeline: RawTimeline,
+    #[serde(rename = "STI", default)]
+    stage_instance: Option<RawStageInstance>,
+}
+
+#[derive(Deserialize)]
+struct RawStageInstance {
+    #[serde(rename = "SI", default)]
+    si: Option<RawSymbolInstance>,
 }
 
 #[derive(Deserialize)]
@@ -1277,5 +1327,28 @@ mod tests {
 
         assert!(!atlas.evaluate_label("NonExistent", 0, &mut parts));
         assert!(parts.is_empty());
+        assert!((atlas.stage_matrix().translation.x).abs() < 1e-6);
+    }
+
+    #[test]
+    fn parses_stage_instance_matrix() {
+        let doc = r#"{
+            "AN": {
+                "STI": {
+                    "SI": {
+                        "SN": "rando",
+                        "MX": [1.0, 0.0, 0.0, 1.0, 1435.6, 560.4]
+                    }
+                },
+                "TL": { "L": [] }
+            },
+            "MD": { "FRT": 24 }
+        }"#;
+        let atlas = AnimateAtlas::from_json_strs(doc, &[SAMPLE_SPRITEMAP_1]).expect("parse");
+        let sm = atlas.stage_matrix();
+        assert!((sm.translation.x - 1435.6).abs() < 1e-4);
+        assert!((sm.translation.y - 560.4).abs() < 1e-4);
+        assert!((sm.matrix2.x_axis.x - 1.0).abs() < 1e-6);
+        assert!((sm.matrix2.y_axis.y - 1.0).abs() < 1e-6);
     }
 }

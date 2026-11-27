@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
-use fnfrs_audio::{decode_file, AudioCommand, AudioEngine, SongTracks, TrackStem};
+use fnfrs_audio::{decode_file, AudioCommand, AudioEngine, DecodedAudio, SongTracks, TrackStem};
 use fnfrs_core::constants::{
     DEFAULT_CHARACTER, DEFAULT_DIFFICULTY, DEFAULT_NOTE_STYLE, DEFAULT_STAGE, DEFAULT_VARIATION,
     VIRTUAL_HEIGHT, VIRTUAL_WIDTH,
@@ -15,16 +15,16 @@ use fnfrs_core::schema::song::{SongChartData, SongMetadata, SongNoteData};
 use fnfrs_game::cutscene::{CutsceneAudioRequest, CutsceneController};
 use fnfrs_game::debug_display::{DebugSnapshot, FunkinDebugDisplay};
 use fnfrs_game::menus::{
-    CharSelectScreenState, FreeplayScreenState, MainMenuScreenState, MenuCommand, MenuInputState,
-    OptionsScreenState, StoryMenuScreenState, TitleScreenState,
+    CharSelectScreenState, CreditsScreenState, FreeplayScreenState, MainMenuScreenState,
+    MenuCommand, MenuInputState, OptionsScreenState, StoryMenuScreenState, TitleScreenState,
 };
 use fnfrs_game::sound_tray::SoundTray;
 use fnfrs_game::{
-    BaseCharacter, CharacterKind, CountdownAssets, CountdownSfx, GameOverAction,
-    GameOverAudioCue, GameOverPhase, GameplaySfxSlots, HealthIcon, InputQueue, KeyBinds,
-    NativeScriptHost, NoteStyleAssets, PauseMenuAction, PauseMenuInput, PlayConfig, PlayScene,
-    PlaySceneConfig, PlaySession, ResultsAction, ResultsRank, ScriptSfxSlots, SongEventQueue,
-    Stage, StrumlineVisualStyle,
+    BaseCharacter, CharacterKind, CountdownAssets, CountdownSfx, GameEventAction,
+    GameOverAction, GameOverAudioCue, GameOverPhase, GameplaySfxSlots, HealthIcon, InputQueue,
+    KeyBinds, NativeScriptHost, NoteStyleAssets, PauseMenuAction, PauseMenuInput, PlayConfig,
+    PlayScene, PlaySceneConfig, PlaySession, ResultsAction, ResultsRank, ScriptSfxSlots,
+    SongEventQueue, Stage, StrumlineVisualStyle,
 };
 use fnfrs_render::{
     BitmapFont, GpuContext, GpuError, MeshBatcher, RainPostPass, SpriteBatcher, StackTextBuffer,
@@ -44,6 +44,7 @@ enum ActiveScreen {
     StoryMenu,
     Freeplay,
     Options,
+    Credits,
     CharSelect,
     Gameplay,
 }
@@ -141,7 +142,9 @@ struct RuntimeState {
     story_menu_screen: Option<StoryMenuScreenState>,
     freeplay_screen: Option<FreeplayScreenState>,
     options_screen: Option<OptionsScreenState>,
+    credits_screen: Option<CreditsScreenState>,
     char_select_screen: Option<CharSelectScreenState>,
+    main_menu_selected: usize,
     save: SaveData,
     sound_tray: SoundTray,
     debug_display: FunkinDebugDisplay,
@@ -280,6 +283,7 @@ impl ApplicationHandler for App {
         let story_menu_screen = None;
         let freeplay_screen = None;
         let options_screen = None;
+        let credits_screen = None;
         let char_select_screen = None;
 
         let mut menu_sfx = MenuSfxSlots::default();
@@ -346,7 +350,9 @@ impl ApplicationHandler for App {
             story_menu_screen,
             freeplay_screen,
             options_screen,
+            credits_screen,
             char_select_screen,
+            main_menu_selected: 0,
             save,
             sound_tray,
             debug_display,
@@ -446,6 +452,9 @@ impl ApplicationHandler for App {
                         KeyCode::ArrowLeft | KeyCode::KeyA => state.menu_input.left_held = pressed,
                         KeyCode::ArrowRight | KeyCode::KeyD => {
                             state.menu_input.right_held = pressed;
+                        }
+                        KeyCode::Enter | KeyCode::Space => {
+                            state.menu_input.accept_held = pressed;
                         }
                         KeyCode::ShiftLeft | KeyCode::ShiftRight => {
                             state.menu_input.shift_held = pressed;
@@ -716,6 +725,7 @@ fn build_active_gameplay(
     );
 
     let mut song_duration_ms = None;
+    let mut viz_inst_audio: Option<(DecodedAudio, i64)> = None;
     let mut sfx_slots = GameplaySfxSlots::default();
     let mut script_sfx_slots = ScriptSfxSlots::default();
     let mut game_over_loss_sfx_slot = None;
@@ -724,7 +734,12 @@ fn build_active_gameplay(
     if let Some(engine) = audio.as_deref_mut() {
         let sample_rate = engine.sample_rate();
         if loaded_chart.chart.is_some() {
-            song_duration_ms = try_load_song_audio(assets, engine, sample_rate, &loaded_chart);
+            if let Some((dur, inst, off_frames)) =
+                try_load_song_audio(assets, engine, sample_rate, &loaded_chart)
+            {
+                song_duration_ms = Some(dur);
+                viz_inst_audio = Some((inst, off_frames));
+            }
         }
         let (miss_slots, loss_slot, script_slots, tray_slots, cs_slots) = register_all_sfx(
             &level_assets,
@@ -793,12 +808,13 @@ fn build_active_gameplay(
     if let Some((_, sz)) = note_assets.health_bar_tex {
         scene.set_health_bar_size(sz[0], sz[1]);
     }
+    preload_event_icons(&level_assets, gpu, &mut scene, bf_is_pixel, dad_is_pixel);
     let picospeaker_notes = loaded_chart
         .chart
         .as_ref()
         .map(|c| c.get_notes("picospeaker"))
         .unwrap_or(&[]);
-    let scripts = NativeScriptHost::new(
+    let mut scripts = NativeScriptHost::new(
         loaded_chart.song_id.as_str(),
         stage_id,
         dad_id,
@@ -809,6 +825,8 @@ fn build_active_gameplay(
         gpu,
         script_sfx_slots,
     );
+    scripts.set_visualizer_audio(viz_inst_audio);
+    scripts.set_visualizer_audible(opts.master_volume > 0.0);
     scene.attach_scripts(scripts);
     if let Some(meta) = metadata {
         if !meta.play_data.difficulties.is_empty() {
@@ -885,6 +903,9 @@ fn purge_inactive_resources(
     if keep_screen != ActiveScreen::Options {
         state.options_screen = None;
     }
+    if keep_screen != ActiveScreen::Credits {
+        state.credits_screen = None;
+    }
     if keep_screen != ActiveScreen::CharSelect {
         state.char_select_screen = None;
     }
@@ -914,6 +935,7 @@ fn enter_menu_screen(
         ActiveScreen::StoryMenu => state.story_menu_screen.is_some(),
         ActiveScreen::Freeplay => state.freeplay_screen.is_some(),
         ActiveScreen::Options => state.options_screen.is_some(),
+        ActiveScreen::Credits => state.credits_screen.is_some(),
         ActiveScreen::CharSelect => state.char_select_screen.is_some(),
         ActiveScreen::Gameplay => state.gameplay.is_some(),
     };
@@ -923,6 +945,7 @@ fn enter_menu_screen(
         state.story_menu_screen = None;
         state.freeplay_screen = None;
         state.options_screen = None;
+        state.credits_screen = None;
         state.char_select_screen = None;
         state.gameplay = None;
         state.gpu.clear_user_textures();
@@ -942,8 +965,8 @@ fn enter_menu_screen(
                 state.main_menu_screen = Some(MainMenuScreenState::load(
                     &state.assets,
                     &mut state.gpu,
-                    state.downscroll_pref,
-                    state.botplay_pref,
+                    state.save.options.flashing_lights,
+                    state.main_menu_selected,
                 ));
             }
             ActiveScreen::StoryMenu => {
@@ -960,6 +983,9 @@ fn enter_menu_screen(
                     &mut state.gpu,
                     state.save.options.clone(),
                 ));
+            }
+            ActiveScreen::Credits => {
+                state.credits_screen = Some(CreditsScreenState::load(&state.assets, &mut state.gpu));
             }
             ActiveScreen::CharSelect => {
                 state.char_select_screen = Some(CharSelectScreenState::load(
@@ -979,8 +1005,7 @@ fn enter_menu_screen(
             }
             ActiveScreen::MainMenu => {
                 if let Some(m) = &mut state.main_menu_screen {
-                    m.sync_gameplay_prefs(state.downscroll_pref, state.botplay_pref);
-                    m.reset_for_enter();
+                    m.reset_for_enter(state.main_menu_selected, state.save.options.flashing_lights);
                 }
             }
             ActiveScreen::StoryMenu => {
@@ -994,7 +1019,7 @@ fn enter_menu_screen(
                     f.reset_for_enter();
                 }
             }
-            ActiveScreen::Options | ActiveScreen::CharSelect | ActiveScreen::Gameplay => {}
+            ActiveScreen::Options | ActiveScreen::Credits | ActiveScreen::CharSelect | ActiveScreen::Gameplay => {}
         }
     }
 }
@@ -1059,6 +1084,7 @@ fn render_app_frame(
             left_pressed: std::mem::take(&mut state.menu_input.left_pressed),
             right_pressed: std::mem::take(&mut state.menu_input.right_pressed),
             accept_pressed: std::mem::take(&mut state.menu_input.accept_pressed),
+            accept_held: state.menu_input.accept_held,
             back_pressed: std::mem::take(&mut state.menu_input.back_pressed),
             tab_pressed: std::mem::take(&mut state.menu_input.tab_pressed),
             fav_pressed: std::mem::take(&mut state.menu_input.fav_pressed),
@@ -1074,10 +1100,15 @@ fn render_app_frame(
                 .title_screen
                 .as_mut()
                 .map_or(MenuCommand::None, |s| s.update(elapsed_s, input)),
-            ActiveScreen::MainMenu => state
-                .main_menu_screen
-                .as_mut()
-                .map_or(MenuCommand::None, |s| s.update(elapsed_s, input)),
+            ActiveScreen::MainMenu => {
+                if let Some(s) = &mut state.main_menu_screen {
+                    let cmd = s.update(elapsed_s, input);
+                    state.main_menu_selected = s.selected();
+                    cmd
+                } else {
+                    MenuCommand::None
+                }
+            }
             ActiveScreen::StoryMenu => {
                 let cmd = state
                     .story_menu_screen
@@ -1116,6 +1147,10 @@ fn render_app_frame(
             }
             ActiveScreen::Options => state
                 .options_screen
+                .as_mut()
+                .map_or(MenuCommand::None, |s| s.update(elapsed_s, input)),
+            ActiveScreen::Credits => state
+                .credits_screen
                 .as_mut()
                 .map_or(MenuCommand::None, |s| s.update(elapsed_s, input)),
             ActiveScreen::CharSelect => state
@@ -1165,6 +1200,11 @@ fn render_app_frame(
                     s.draw(&mut state.overlay_sprite_batcher, &state.hud_font, state.hud_font_tex);
                 }
             }
+            ActiveScreen::Credits => {
+                if let Some(s) = &state.credits_screen {
+                    s.draw(&mut state.overlay_sprite_batcher, &state.hud_font, state.hud_font_tex);
+                }
+            }
             ActiveScreen::CharSelect => {
                 if let Some(s) = &state.char_select_screen {
                     s.draw(&mut state.overlay_sprite_batcher, &state.hud_font, state.hud_font_tex);
@@ -1182,6 +1222,7 @@ fn render_app_frame(
                 ActiveScreen::StoryMenu => "StoryMenu",
                 ActiveScreen::Freeplay => "Freeplay",
                 ActiveScreen::Options => "Options",
+                ActiveScreen::Credits => "Credits",
                 ActiveScreen::CharSelect => "CharSelect",
                 ActiveScreen::Gameplay => "Gameplay",
             },
@@ -1409,6 +1450,8 @@ fn render_app_frame(
     } else {
         raw_song_pos_ms + f64::from(state.save.options.audio_offset_ms)
     };
+    let viz_audible = !state.sound_tray.is_muted() && state.sound_tray.effective_volume() > 0.0;
+    gp.scene.scripts.set_visualizer_audible(viz_audible);
 
     let step_events = gp.scene.update(
         effective_song_pos_ms,
@@ -1578,6 +1621,23 @@ fn render_app_frame(
     present_single_batch(state, event_loop, clear_color, true);
 }
 
+fn open_external_url(url: &str) {
+    #[cfg(target_os = "windows")]
+    {
+        let _ = std::process::Command::new("cmd")
+            .args(["/C", "start", "", url])
+            .spawn();
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let _ = std::process::Command::new("open").arg(url).spawn();
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        let _ = std::process::Command::new("xdg-open").arg(url).spawn();
+    }
+}
+
 fn handle_menu_command(
     state: &mut RuntimeState,
     mut audio: Option<&mut AudioEngine>,
@@ -1599,7 +1659,28 @@ fn handle_menu_command(
                 }
             }
         }
+        MenuCommand::PlaySfxVol(key, vol) => {
+            if let Some(engine) = audio {
+                let slot = match key {
+                    "scrollMenu" => state.menu_sfx.scroll,
+                    "confirmMenu" => state.menu_sfx.confirm,
+                    "cancelMenu" => state.menu_sfx.cancel,
+                    _ => None,
+                };
+                if let Some(s) = slot {
+                    let _ = engine.play_sfx(s, vol);
+                }
+            }
+        }
         MenuCommand::EnterTitle => {
+            enter_menu_screen(state, audio, ActiveScreen::Title, true);
+        }
+        MenuCommand::CancelToTitle => {
+            if let Some(engine) = audio.as_deref_mut() {
+                if let Some(s) = state.menu_sfx.cancel {
+                    let _ = engine.play_sfx(s, 0.8);
+                }
+            }
             enter_menu_screen(state, audio, ActiveScreen::Title, true);
         }
         MenuCommand::EnterMainMenu => {
@@ -1613,6 +1694,26 @@ fn handle_menu_command(
         }
         MenuCommand::EnterOptions => {
             enter_menu_screen(state, audio, ActiveScreen::Options, true);
+        }
+        MenuCommand::EnterCredits => {
+            enter_menu_screen(state, audio.as_deref_mut(), ActiveScreen::Credits, true);
+            if let Some(engine) = audio {
+                state.menu_music_playing = play_music_by_key(&state.assets, engine, "freeplayRandom")
+                    || state.menu_music_playing;
+            }
+        }
+        MenuCommand::ExitCreditsToMainMenu => {
+            enter_menu_screen(state, audio.as_deref_mut(), ActiveScreen::MainMenu, true);
+            if let Some(engine) = audio {
+                if let Some(s) = state.menu_sfx.cancel {
+                    let _ = engine.play_sfx(s, 0.8);
+                }
+                state.menu_music_playing = play_music_by_key(&state.assets, engine, "freakyMenu");
+                engine.reclaim_retired();
+            }
+        }
+        MenuCommand::OpenUrl(url) => {
+            open_external_url(url);
         }
         MenuCommand::EnterCharSelect => {
             enter_menu_screen(state, audio, ActiveScreen::CharSelect, true);
@@ -1682,10 +1783,6 @@ fn handle_menu_command(
             difficulty,
             variation,
         } => {
-            if let Some(mm) = &state.main_menu_screen {
-                state.downscroll_pref = mm.downscroll();
-                state.botplay_pref = mm.botplay();
-            }
             purge_inactive_resources(state, audio.as_deref_mut(), ActiveScreen::Gameplay);
             state.return_target = ReturnTarget::Freeplay;
             state.screen = ActiveScreen::Gameplay;
@@ -1717,10 +1814,6 @@ fn handle_menu_command(
         }
         MenuCommand::StartStoryWeek { songs, difficulty } => {
             if let Some(first_song) = songs.first().cloned() {
-                if let Some(mm) = &state.main_menu_screen {
-                    state.downscroll_pref = mm.downscroll();
-                    state.botplay_pref = mm.botplay();
-                }
                 state.story_level_id = state
                     .story_menu_screen
                     .as_ref()
@@ -2017,10 +2110,13 @@ fn restart_runtime_song(
     if gp.song_audio_replaced {
         if let Some(engine) = audio.as_deref_mut() {
             let sr = engine.sample_rate();
-            if let Some(dur) = try_load_song_audio(assets, engine, sr, &gp.loaded_chart) {
+            if let Some((dur, inst, off_frames)) =
+                try_load_song_audio(assets, engine, sr, &gp.loaded_chart)
+            {
                 gp.has_song_audio = true;
                 gp.song_duration_ms = Some(dur);
                 gp.song_audio_replaced = false;
+                gp.scene.scripts.set_visualizer_audio(Some((inst, off_frames)));
             }
         }
     }
@@ -2362,12 +2458,69 @@ fn dispatch_cutscene_audio(
     }
 }
 
+fn preload_event_icons(
+    assets: &AssetLocator,
+    gpu: &mut GpuContext,
+    scene: &mut PlayScene,
+    bf_is_pixel: bool,
+    dad_is_pixel: bool,
+) {
+    let mut to_load = Vec::new();
+    for ev in scene.event_queue.events() {
+        if let GameEventAction::SetHealthIcon {
+            char_id,
+            icon_id,
+            scale,
+            flip_x,
+            is_pixel,
+            should_bop,
+            offsets,
+        } = &ev.action
+        {
+            if (*char_id == 0 || *char_id == 1)
+                && !to_load.iter().any(|(c, id, ..)| *c == *char_id && id.eq_ignore_ascii_case(icon_id))
+            {
+                to_load.push((
+                    *char_id,
+                    icon_id.clone(),
+                    *scale,
+                    *flip_x,
+                    *is_pixel,
+                    *should_bop,
+                    *offsets,
+                ));
+            }
+        }
+    }
+    for (char_id, icon_id, scale, flip_x, is_pixel, should_bop, offsets) in to_load {
+        let is_player = char_id == 0;
+        let char_pix = if is_player { bf_is_pixel } else { dad_is_pixel };
+        let mut icon = HealthIcon::load(assets, gpu, &icon_id, is_player, None, char_pix);
+        if let Some(s) = scale {
+            icon.base_scale = s.max(0.05);
+        }
+        if let Some(fx) = flip_x {
+            icon.flip_x = if is_player { !fx } else { fx };
+        }
+        if let Some(px) = is_pixel {
+            icon.is_pixel = px;
+        }
+        if let Some(bop) = should_bop {
+            icon.should_bop = bop;
+        }
+        if let Some(off) = offsets {
+            icon.offsets = off;
+        }
+        scene.register_alternate_icon(char_id, icon);
+    }
+}
+
 fn try_load_song_audio(
     assets: &AssetLocator,
     engine: &mut AudioEngine,
     sample_rate: u32,
     loaded: &LoadedChart,
-) -> Option<f64> {
+) -> Option<(f64, DecodedAudio, i64)> {
     let metadata = loaded.metadata.as_ref();
     let song_id = loaded.song_id.as_str();
     let variation = loaded.variation.as_deref();
@@ -2416,15 +2569,18 @@ fn try_load_song_audio(
             .map(|a| TrackStem::new(a, pv_offset));
     }
 
+    let inst_stem = TrackStem::new(inst_audio, inst_offset);
+    let inst_for_viz = inst_stem.audio.clone();
+    let inst_offset_frames = inst_stem.offset_frames;
     let tracks = SongTracks::new(
-        Some(TrackStem::new(inst_audio, inst_offset)),
+        Some(inst_stem),
         player_vocals,
         opponent_vocals,
     );
     let duration_ms = (tracks.duration_frames as f64 / f64::from(sample_rate.max(1))) * 1000.0;
 
     engine.load_song(tracks, 0.0).ok()?;
-    Some(duration_ms)
+    Some((duration_ms, inst_for_viz, inst_offset_frames))
 }
 
 fn create_session(loaded: &LoadedChart, config: PlayConfig) -> PlaySession {
