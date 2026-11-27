@@ -13,7 +13,7 @@ use fnfrs_render::{
     StackTextBuffer, TextAlign, TextStyle, TextureHandle,
 };
 
-use crate::camera::{smooth_lerp_precision, FlxEase};
+use crate::camera::FlxEase;
 use crate::stage::parse_stage_color;
 
 use super::{
@@ -22,6 +22,20 @@ use super::{
 };
 
 const STORY_DIFFS: [&str; 3] = ["easy", "normal", "hard"];
+
+#[inline]
+fn smooth_lerp_precision(current: f64, target: f64, dt: f32, duration: f64, precision: f64) -> f64 {
+    if (current - target).abs() <= precision {
+        return target;
+    }
+    let t = 1.0 - (-f64::from(dt.max(0.0)) / duration.max(1e-4)).exp();
+    let next = current + (target - current) * t;
+    if (next - target).abs() <= precision {
+        target
+    } else {
+        next
+    }
+}
 const INTRO_BPM: f32 = 102.0;
 const BANNER_Y: f32 = 56.0;
 const BANNER_HEIGHT: f32 = 400.0;
@@ -494,14 +508,15 @@ impl StoryMenuScreenState {
                 prev.props.clear();
             }
         }
+        let prev_simple = prev_idx
+            .and_then(|i| self.weeks.get(i))
+            .is_none_or(|p| p.is_simple_bg);
+
         if let Some(curr) = self.weeks.get_mut(self.selected_week) {
             curr.props = load_week_props(&curr.prop_specs, assets, gpu);
             self.loaded_props_week = Some(self.selected_week);
 
             // Trigger background color or complex background crossfade (`updateBackground`).
-            let prev_simple = prev_idx
-                .and_then(|i| self.weeks.get(i))
-                .is_none_or(|p| p.is_simple_bg);
             if curr.is_simple_bg && prev_simple {
                 self.old_bg_fade = None;
                 self.active_bg_tex = None;
