@@ -2,7 +2,7 @@ use fnfrs_render::SpriteBatcher;
 
 use crate::character::BaseCharacter;
 #[derive(Debug, Clone, Copy)]
-struct SpiritGhostSample {
+pub(super) struct SpiritGhostSample {
     valid: bool,
     anim_index: usize,
     frame_index: usize,
