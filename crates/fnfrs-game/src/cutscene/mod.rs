@@ -318,6 +318,7 @@ impl CutsceneController {
     }
 
     /// Starts any matching post-song cutscene (`eggnog-erect`, `stress-pico`, Story videos).
+    #[allow(clippy::too_many_arguments)]
     pub fn start_post_song(
         &mut self,
         song_id: &str,

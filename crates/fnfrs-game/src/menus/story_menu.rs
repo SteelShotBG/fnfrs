@@ -64,6 +64,7 @@ struct StoryPropSprite {
     alpha: f32,
     is_pixel: bool,
     flip_x: bool,
+    #[allow(dead_code)]
     flip_y: bool,
     fps: f32,
 }

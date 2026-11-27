@@ -29,6 +29,8 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           cache-on-failure: true
+          cache-workspace-crates: true
+          cache-all-crates: true
 
       - name: Run Clippy
         run: cargo clippy --workspace --all-targets --keep-going -- -D warnings
