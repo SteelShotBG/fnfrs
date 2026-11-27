@@ -28,11 +28,11 @@ impl Default for SpiritGhostSample {
 pub(super) struct SpiritTrail {
     pub(super) enabled: bool,
     pub(super) z_index: i32,
-    delay_s: f32,
-    base_alpha: f32,
-    alpha_diff: f32,
-    timer_s: f32,
-    samples: [SpiritGhostSample; 4],
+    pub(super) delay_s: f32,
+    pub(super) base_alpha: f32,
+    pub(super) alpha_diff: f32,
+    pub(super) timer_s: f32,
+    pub(super) samples: [SpiritGhostSample; 4],
 }
 
 impl Default for SpiritTrail {

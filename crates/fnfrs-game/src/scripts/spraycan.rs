@@ -6,7 +6,7 @@ use fnfrs_render::{AnimateAtlas, BlendMode, EvaluatedPart, GpuContext, SpriteBat
 use crate::character::{draw_animate_parts, load_animate_source, AtlasDrawParams, LoadedAtlasSource};
 use crate::stage::Stage;
 #[derive(Debug, Clone, Default)]
-pub(super) struct QuadCarTween {
+pub(crate) struct QuadCarTween {
     pub(super) active: bool,
     pub(super) elapsed_s: f32,
     pub(super) duration_s: f32,
