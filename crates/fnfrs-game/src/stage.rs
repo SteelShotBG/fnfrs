@@ -743,6 +743,13 @@ impl Stage {
             .and_then(|i| self.props.get_mut(i))
     }
 
+    /// Shorthand alias for [`Stage::get_named_prop_mut`].
+    #[inline]
+    #[must_use]
+    pub fn prop_mut(&mut self, name: &str) -> Option<&mut StageProp> {
+        self.get_named_prop_mut(name)
+    }
+
     /// Boyfriend placement metadata (`position`, `zIndex`, `cameraOffsets`, `scale`).
     #[inline]
     #[must_use]

@@ -1,4 +1,11 @@
-//! Pre-song & post-song V-Slice cutscene coordinator (video, Week 6 dialogue, in-game).
+//! Pre-song & post-song V-Slice cutscene coordinator (video, Week 6 dialogue, in-game scripted scenes).
+
+pub mod common;
+pub mod darnell_intro;
+pub mod eggnog_erect;
+pub mod philly_doppel;
+pub mod sserafim_intro;
+pub mod stress_pico;
 
 use fnfrs_core::constants::{VIRTUAL_HEIGHT, VIRTUAL_WIDTH};
 use fnfrs_core::paths::AssetLocator;
@@ -8,20 +15,23 @@ use fnfrs_render::{
 
 use crate::character::{build_loaded_anim, draw_atlas_frame, load_sparrow_source, AnimBank, AtlasDrawParams};
 use crate::dialogue::{DialogueAction, DialogueState};
+use crate::hud::PauseMenuMode;
+use crate::play_state::PlayScene;
 use crate::video::{VideoCutsceneAction, VideoCutsceneState};
 
-/// External audio cue requested by an active cutscene step.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CutsceneAudioRequest {
-    None,
-    PlayMusic { key: &'static str, looped: bool },
-    PlaySound { key: &'static str },
-    StopMusic,
-}
+pub use common::{CutsceneAudioQueue, CutsceneAudioRequest};
+use darnell_intro::DarnellIntroState;
+use eggnog_erect::EggnogErectOutroState;
+use philly_doppel::PhillyDoppelState;
+use sserafim_intro::SserafimIntroState;
+use stress_pico::StressPicoOutroState;
 
 #[derive(Debug)]
 enum ActiveCutsceneKind {
-    Video(Box<VideoCutsceneState>),
+    Video {
+        vid: Box<VideoCutsceneState>,
+        chain_darnell_ingame: bool,
+    },
     Dialogue(Box<DialogueState>),
     Week5Horror {
         elapsed_s: f32,
@@ -39,17 +49,27 @@ enum ActiveCutsceneKind {
         senpai_bank: Option<AnimBank>,
         dialogue: Box<DialogueState>,
     },
-    EggnogErectOutro {
-        elapsed_s: f32,
-        santa_shot_played: bool,
-    },
+    EggnogErectOutro(Box<EggnogErectOutroState>),
+    PhillyDoppelganger(Box<PhillyDoppelState>),
+    StressPicoOutro(Box<StressPicoOutroState>),
+    DarnellIntro(Box<DarnellIntroState>),
+    SserafimIntro(Box<SserafimIntroState>),
 }
 
-/// Top-level cutscene runner for Story Mode and Pico Mix song entries/exits.
+/// Per-frame output from [`CutsceneController::update_with_scene`].
+#[derive(Debug, Clone, Copy, Default)]
+pub struct CutsceneStepResult {
+    pub finished: bool,
+    pub audio: CutsceneAudioQueue,
+    pub mute_opponent_vocals: bool,
+}
+
+/// Top-level cutscene runner for Story Mode, Pico Mix, and Erect song entries/exits.
 #[derive(Debug, Default)]
 pub struct CutsceneController {
     kind: Option<ActiveCutsceneKind>,
     white_tex: Option<TextureHandle>,
+    paused: bool,
 }
 
 impl CutsceneController {
@@ -60,33 +80,97 @@ impl CutsceneController {
 
     #[must_use]
     pub fn hides_hud(&self) -> bool {
-        matches!(
-            self.kind,
-            Some(
-                ActiveCutsceneKind::Video(_)
-                    | ActiveCutsceneKind::Week5Horror { .. }
-                    | ActiveCutsceneKind::Week6SenpaiIntro { .. }
-                    | ActiveCutsceneKind::Week6ThornsIntro { .. }
-                    | ActiveCutsceneKind::EggnogErectOutro { .. }
-            )
-        )
+        self.kind.is_some()
     }
 
-    /// Starts any matching pre-song cutscene (Story Mode or Pico mix) cleanly.
+    /// Returns which [`PauseMenuMode`] should open when Escape/P is pressed during a cutscene.
+    #[must_use]
+    pub fn pause_mode(&self) -> Option<PauseMenuMode> {
+        match &self.kind {
+            Some(ActiveCutsceneKind::Video { .. }) => Some(PauseMenuMode::Cutscene),
+            Some(
+                ActiveCutsceneKind::Dialogue(_)
+                | ActiveCutsceneKind::Week6SenpaiIntro { .. }
+                | ActiveCutsceneKind::Week6ThornsIntro { .. },
+            ) => Some(PauseMenuMode::Conversation),
+            _ => None,
+        }
+    }
+
+    /// Pauses or resumes active video/dialogue playback without discarding progress.
+    pub fn set_paused(&mut self, paused: bool) {
+        self.paused = paused;
+        if let Some(ActiveCutsceneKind::Video { vid, .. }) = &mut self.kind {
+            vid.set_paused(paused);
+        }
+    }
+
+    /// Restarts active paused video or dialogue from the beginning.
+    pub fn restart_active(&mut self, audio: &mut CutsceneAudioQueue) {
+        self.paused = false;
+        match &mut self.kind {
+            Some(ActiveCutsceneKind::Video { vid, .. }) => vid.restart(),
+            Some(ActiveCutsceneKind::Dialogue(dlg)) => dlg.restart(),
+            Some(ActiveCutsceneKind::Week6SenpaiIntro { elapsed_s, dialogue }) => {
+                *elapsed_s = 0.0;
+                dialogue.restart();
+                audio.push(CutsceneAudioRequest::PlayMusic {
+                    key: "Lunchbox",
+                    looped: true,
+                });
+            }
+            Some(ActiveCutsceneKind::Week6ThornsIntro { dialogue, .. }) => {
+                dialogue.restart();
+            }
+            _ => {}
+        }
+    }
+
+    /// Immediately finishes/skips active paused video or dialogue cleanly.
+    pub fn skip_active(&mut self, audio: &mut CutsceneAudioQueue) -> bool {
+        self.paused = false;
+        match &mut self.kind {
+            Some(ActiveCutsceneKind::Video { vid, .. }) => {
+                vid.finish();
+                self.kind = None;
+                true
+            }
+            Some(
+                ActiveCutsceneKind::Dialogue(_)
+                | ActiveCutsceneKind::Week6SenpaiIntro { .. }
+                | ActiveCutsceneKind::Week6ThornsIntro { .. },
+            ) => {
+                audio.push(CutsceneAudioRequest::StopMusic);
+                self.kind = None;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Starts any matching pre-song cutscene (Story Mode, Pico Mix, or Stage intro).
     #[allow(clippy::too_many_arguments)]
     pub fn start_pre_song(
         &mut self,
         song_id: &str,
         variation: Option<&str>,
+        stage_id: &str,
+        bf_id: &str,
         is_story_mode: bool,
         naughtyness: bool,
         assets: &AssetLocator,
         gpu: &mut GpuContext,
         volume: f32,
-    ) -> CutsceneAudioRequest {
+        scene: &mut PlayScene,
+    ) -> CutsceneAudioQueue {
         self.white_tex = Some(gpu.white_texture());
         self.kind = None;
+        self.paused = false;
+        let mut queue = CutsceneAudioQueue::default();
+
         let song = song_id.to_ascii_lowercase();
+        let stage = stage_id.to_ascii_lowercase();
+        let bf = bf_id.to_ascii_lowercase();
         let is_pico = variation.is_some_and(|v| v.eq_ignore_ascii_case("pico"));
 
         if song == "senpai" && (is_story_mode || is_pico) {
@@ -96,10 +180,11 @@ impl CutsceneController {
                     elapsed_s: 0.0,
                     dialogue: Box::new(dlg),
                 });
-                return CutsceneAudioRequest::PlayMusic {
+                queue.push(CutsceneAudioRequest::PlayMusic {
                     key: "Lunchbox",
                     looped: true,
-                };
+                });
+                return queue;
             }
         }
 
@@ -112,9 +197,10 @@ impl CutsceneController {
             };
             if let Some(dlg) = DialogueState::load_by_id(conv_id, assets, gpu) {
                 self.kind = Some(ActiveCutsceneKind::Dialogue(Box::new(dlg)));
-                return CutsceneAudioRequest::PlaySound {
+                queue.push(CutsceneAudioRequest::PlaySound {
                     key: "ANGRY_TEXT_BOX",
-                };
+                });
+                return queue;
             }
         }
 
@@ -150,7 +236,8 @@ impl CutsceneController {
                     senpai_bank: if bank.anims.is_empty() { None } else { Some(bank) },
                     dialogue: Box::new(dlg),
                 });
-                return CutsceneAudioRequest::StopMusic;
+                queue.push(CutsceneAudioRequest::StopMusic);
+                return queue;
             }
         }
 
@@ -159,34 +246,78 @@ impl CutsceneController {
                 elapsed_s: 0.0,
                 lights_turned_on: false,
             });
-            return CutsceneAudioRequest::None;
+            return queue;
+        }
+
+        if stage == "phillytrainerect" && bf == "pico-playable" {
+            let state = PhillyDoppelState::start(assets, gpu, scene, &mut queue);
+            self.kind = Some(ActiveCutsceneKind::PhillyDoppelganger(Box::new(state)));
+            return queue;
+        }
+
+        if stage == "sserafim" {
+            let state = SserafimIntroState::start(assets, gpu, scene);
+            self.kind = Some(ActiveCutsceneKind::SserafimIntro(Box::new(state)));
+            return queue;
+        }
+
+        if song == "stress" && is_pico {
+            let key = if naughtyness {
+                "stressPicoCutscene"
+            } else {
+                "stressPicoCutscene-censored"
+            };
+            if let Some(vid) = VideoCutsceneState::open(key, assets, gpu, volume) {
+                self.kind = Some(ActiveCutsceneKind::Video {
+                    vid: Box::new(vid),
+                    chain_darnell_ingame: false,
+                });
+                queue.push(CutsceneAudioRequest::StopMusic);
+                return queue;
+            }
         }
 
         if is_story_mode {
             let video_key: Option<&str> = match song.as_str() {
                 "ugh" => Some("ughCutscene"),
                 "guns" => Some("gunsCutscene"),
-                "stress" => Some(match (is_pico, naughtyness) {
-                    (true, true) => "stressPicoCutscene",
-                    (true, false) => "stressPicoCutscene-censored",
-                    (false, true) => "stressCutscene",
-                    (false, false) => "stressCutscene-censored",
+                "stress" => Some(if naughtyness {
+                    "stressCutscene"
+                } else {
+                    "stressCutscene-censored"
                 }),
-                "darnell" => Some("darnellCutscene"),
+                "darnell" => Some(if naughtyness {
+                    "darnellCutscene"
+                } else {
+                    "darnellCutscene-censored"
+                }),
                 _ => None,
             };
             if let Some(key) = video_key {
-                if let Some(vid) = VideoCutsceneState::open(key, assets, gpu, volume) {
-                    self.kind = Some(ActiveCutsceneKind::Video(Box::new(vid)));
-                    return CutsceneAudioRequest::StopMusic;
+                let fallback_key = (song == "darnell").then_some("darnellCutscene");
+                let vid = VideoCutsceneState::open(key, assets, gpu, volume).or_else(|| {
+                    fallback_key.and_then(|k| VideoCutsceneState::open(k, assets, gpu, volume))
+                });
+                if let Some(vid) = vid {
+                    self.kind = Some(ActiveCutsceneKind::Video {
+                        vid: Box::new(vid),
+                        chain_darnell_ingame: song == "darnell",
+                    });
+                    queue.push(CutsceneAudioRequest::StopMusic);
+                    return queue;
                 }
+            }
+            if song == "darnell" {
+                let state = DarnellIntroState::start(scene);
+                self.kind = Some(ActiveCutsceneKind::DarnellIntro(Box::new(state)));
+                return queue;
             }
         }
 
-        CutsceneAudioRequest::None
+        queue
     }
 
-    /// Starts any matching post-song cutscene (Story Mode video or `eggnog-erect` Santa death).
+    /// Starts any matching post-song cutscene (`eggnog-erect`, `stress-pico`, Story videos).
     pub fn start_post_song(
         &mut self,
         song_id: &str,
@@ -195,20 +326,30 @@ impl CutsceneController {
         assets: &AssetLocator,
         gpu: &mut GpuContext,
         volume: f32,
-    ) -> CutsceneAudioRequest {
+        scene: &mut PlayScene,
+    ) -> CutsceneAudioQueue {
         self.white_tex = Some(gpu.white_texture());
         self.kind = None;
+        self.paused = false;
+        let mut queue = CutsceneAudioQueue::default();
+
         let song = song_id.to_ascii_lowercase();
         let is_erect = variation.is_some_and(|v| v.eq_ignore_ascii_case("erect"));
+        let is_pico = variation.is_some_and(|v| v.eq_ignore_ascii_case("pico"));
 
         if song == "eggnog" && is_erect {
-            self.kind = Some(ActiveCutsceneKind::EggnogErectOutro {
-                elapsed_s: 0.0,
-                santa_shot_played: false,
-            });
-            return CutsceneAudioRequest::PlaySound {
+            let state = EggnogErectOutroState::start(assets, gpu, scene);
+            self.kind = Some(ActiveCutsceneKind::EggnogErectOutro(Box::new(state)));
+            queue.push(CutsceneAudioRequest::PlaySound {
                 key: "santa_emotion",
-            };
+            });
+            return queue;
+        }
+
+        if song == "stress" && is_pico {
+            let state = StressPicoOutroState::start(assets, scene, &mut queue);
+            self.kind = Some(ActiveCutsceneKind::StressPicoOutro(Box::new(state)));
+            return queue;
         }
 
         if is_story_mode {
@@ -219,50 +360,67 @@ impl CutsceneController {
             };
             if let Some(key) = video_key {
                 if let Some(vid) = VideoCutsceneState::open(key, assets, gpu, volume) {
-                    self.kind = Some(ActiveCutsceneKind::Video(Box::new(vid)));
-                    return CutsceneAudioRequest::StopMusic;
+                    self.kind = Some(ActiveCutsceneKind::Video {
+                        vid: Box::new(vid),
+                        chain_darnell_ingame: false,
+                    });
+                    queue.push(CutsceneAudioRequest::StopMusic);
+                    return queue;
                 }
             }
         }
 
-        CutsceneAudioRequest::None
+        queue
     }
 
-    /// Advances active cutscene timer/dialogue/video. Returns `(finished_now, audio_request)`.
-    pub fn update(
+    /// Advances the active cutscene alongside `PlayScene` (stage props, characters, camera).
+    pub fn update_with_scene(
         &mut self,
         elapsed_s: f32,
         gpu: &GpuContext,
         volume: f32,
-        accept_pressed: bool,
-        back_pressed: bool,
-    ) -> (bool, CutsceneAudioRequest) {
+        advance_pressed: bool,
+        scene: &mut PlayScene,
+    ) -> CutsceneStepResult {
+        let mut res = CutsceneStepResult::default();
+        if self.paused {
+            return res;
+        }
         let Some(kind) = self.kind.as_mut() else {
-            return (false, CutsceneAudioRequest::None);
+            return res;
         };
         let dt = elapsed_s.clamp(0.0, 0.1);
-        let mut req = CutsceneAudioRequest::None;
         let mut done = false;
+        let mut start_darnell_ingame = false;
 
         match kind {
-            ActiveCutsceneKind::Video(vid) => {
-                if vid.update(dt, gpu, volume, accept_pressed, back_pressed)
+            ActiveCutsceneKind::Video {
+                vid,
+                chain_darnell_ingame,
+            } => {
+                if vid.update(dt, gpu, volume, advance_pressed, false)
                     == VideoCutsceneAction::Finished
                 {
-                    done = true;
+                    if *chain_darnell_ingame {
+                        start_darnell_ingame = true;
+                    } else {
+                        done = true;
+                    }
                 }
             }
             ActiveCutsceneKind::Dialogue(dlg) => {
-                match dlg.update(dt, accept_pressed, back_pressed) {
+                match dlg.update(dt, advance_pressed, false) {
                     DialogueAction::Finished => {
                         done = true;
-                        req = CutsceneAudioRequest::StopMusic;
+                        res.audio.push(CutsceneAudioRequest::StopMusic);
                     }
                     DialogueAction::PlayTypeTick => {
-                        req = CutsceneAudioRequest::PlaySound { key: "pixelText" };
+                        res.audio
+                            .push(CutsceneAudioRequest::PlaySound { key: "pixelText" });
                     }
                     DialogueAction::PlayClick => {
-                        req = CutsceneAudioRequest::PlaySound { key: "clickText" };
+                        res.audio
+                            .push(CutsceneAudioRequest::PlaySound { key: "clickText" });
                     }
                     DialogueAction::None => {}
                 }
@@ -274,33 +432,35 @@ impl CutsceneController {
                 *elapsed_s += dt;
                 if !*lights_turned_on && *elapsed_s >= 0.1 {
                     *lights_turned_on = true;
-                    req = CutsceneAudioRequest::PlaySound {
+                    scene.camera_rig.cam_game.snap_to(400.0, -2050.0);
+                    scene.camera_rig.cam_game.zoom = 2.5;
+                    res.audio.push(CutsceneAudioRequest::PlaySound {
                         key: "Lights_Turn_On",
-                    };
+                    });
                 }
-                if *elapsed_s >= 2.1 || back_pressed {
+                scene.camera_rig.update(dt);
+                if *elapsed_s >= 2.1 {
                     done = true;
                 }
             }
             ActiveCutsceneKind::Week6SenpaiIntro { elapsed_s, dialogue } => {
                 *elapsed_s += dt;
                 if *elapsed_s >= 2.0 {
-                    match dialogue.update(dt, accept_pressed, back_pressed) {
+                    match dialogue.update(dt, advance_pressed, false) {
                         DialogueAction::Finished => {
                             done = true;
-                            req = CutsceneAudioRequest::StopMusic;
+                            res.audio.push(CutsceneAudioRequest::StopMusic);
                         }
                         DialogueAction::PlayTypeTick => {
-                            req = CutsceneAudioRequest::PlaySound { key: "pixelText" };
+                            res.audio
+                                .push(CutsceneAudioRequest::PlaySound { key: "pixelText" });
                         }
                         DialogueAction::PlayClick => {
-                            req = CutsceneAudioRequest::PlaySound { key: "clickText" };
+                            res.audio
+                                .push(CutsceneAudioRequest::PlaySound { key: "clickText" });
                         }
                         DialogueAction::None => {}
                     }
-                } else if back_pressed {
-                    done = true;
-                    req = CutsceneAudioRequest::StopMusic;
                 }
             }
             ActiveCutsceneKind::Week6ThornsIntro {
@@ -319,7 +479,9 @@ impl CutsceneController {
                         *senpai_alpha = (*senpai_alpha + 0.15).min(1.0);
                         if *senpai_alpha >= 1.0 && !*started_anim {
                             *started_anim = true;
-                            req = CutsceneAudioRequest::PlaySound { key: "Senpai_Dies" };
+                            res.audio.push(CutsceneAudioRequest::PlaySound {
+                                key: "Senpai_Dies",
+                            });
                             if let Some(bank) = senpai_bank {
                                 if let Some(&idx) = bank.anim_index.get("idle") {
                                     bank.play_index(idx, true);
@@ -327,55 +489,73 @@ impl CutsceneController {
                             }
                         }
                     }
-                } else if !dialogue.music_asset.is_some() || *elapsed_s >= 4.2 {
+                } else {
                     if let Some(bank) = senpai_bank {
                         bank.update(dt);
                     }
                     if *elapsed_s >= 4.2 {
-                        match dialogue.update(dt, accept_pressed, back_pressed) {
+                        match dialogue.update(dt, advance_pressed, false) {
                             DialogueAction::Finished => {
                                 done = true;
-                                req = CutsceneAudioRequest::StopMusic;
+                                res.audio.push(CutsceneAudioRequest::StopMusic);
                             }
                             DialogueAction::PlayTypeTick => {
-                                req = CutsceneAudioRequest::PlaySound { key: "pixelText" };
+                                res.audio
+                                    .push(CutsceneAudioRequest::PlaySound { key: "pixelText" });
                             }
                             DialogueAction::PlayClick => {
-                                req = CutsceneAudioRequest::PlaySound { key: "clickText" };
+                                res.audio
+                                    .push(CutsceneAudioRequest::PlaySound { key: "clickText" });
                             }
                             DialogueAction::None => {}
                         }
-                    } else if back_pressed {
-                        done = true;
-                        req = CutsceneAudioRequest::StopMusic;
                     }
-                } else if let Some(bank) = senpai_bank {
-                    bank.update(dt);
                 }
             }
-            ActiveCutsceneKind::EggnogErectOutro {
-                elapsed_s,
-                santa_shot_played,
-            } => {
-                *elapsed_s += dt;
-                if !*santa_shot_played && *elapsed_s >= 11.375 {
-                    *santa_shot_played = true;
-                    req = CutsceneAudioRequest::PlaySound {
-                        key: "santa_shot_n_falls",
-                    };
+            ActiveCutsceneKind::EggnogErectOutro(st) => {
+                done = st.update(dt, advance_pressed, scene, &mut res.audio);
+            }
+            ActiveCutsceneKind::PhillyDoppelganger(st) => {
+                done = st.update(dt, advance_pressed, scene, &mut res.audio);
+                if done && st.explode {
+                    res.mute_opponent_vocals = true;
                 }
-                if *elapsed_s >= 15.5 || (accept_pressed && *elapsed_s > 0.6) || back_pressed {
-                    done = true;
-                }
+            }
+            ActiveCutsceneKind::StressPicoOutro(st) => {
+                done = st.update(dt, advance_pressed, scene, &mut res.audio);
+            }
+            ActiveCutsceneKind::DarnellIntro(st) => {
+                done = st.update(dt, advance_pressed, scene, &mut res.audio);
+            }
+            ActiveCutsceneKind::SserafimIntro(st) => {
+                done = st.update(dt, advance_pressed, scene, &mut res.audio);
             }
         }
 
-        if done {
+        if start_darnell_ingame {
+            let state = DarnellIntroState::start(scene);
+            self.kind = Some(ActiveCutsceneKind::DarnellIntro(Box::new(state)));
+        } else if done {
             self.kind = None;
+            res.finished = true;
         }
-        (done, req)
+        res
     }
 
+    /// Draws any world-space scripted cutscene sprites into `stage_sprites`.
+    pub fn draw_world(&self, batcher: &mut SpriteBatcher, cam_pos: [f32; 2], cam_zoom: f32) {
+        let Some(kind) = &self.kind else {
+            return;
+        };
+        match kind {
+            ActiveCutsceneKind::EggnogErectOutro(st) => st.draw_world(batcher, cam_pos, cam_zoom),
+            ActiveCutsceneKind::PhillyDoppelganger(st) => st.draw_world(batcher, cam_pos, cam_zoom),
+            ActiveCutsceneKind::SserafimIntro(st) => st.draw_world(batcher, cam_pos, cam_zoom),
+            _ => {}
+        }
+    }
+
+    /// Draws cutscene overlays (videos, dialogue, fades, subtitles, skip prompt).
     pub fn draw(
         &mut self,
         batcher: &mut SpriteBatcher,
@@ -386,7 +566,7 @@ impl CutsceneController {
             return;
         };
         match kind {
-            ActiveCutsceneKind::Video(vid) => {
+            ActiveCutsceneKind::Video { vid, .. } => {
                 if let Some(white_tex) = self.white_tex {
                     vid.draw(batcher, white_tex, font, font_tex);
                 }
@@ -488,19 +668,20 @@ impl CutsceneController {
                     dialogue.draw(batcher, font, font_tex);
                 }
             }
-            ActiveCutsceneKind::EggnogErectOutro { elapsed_s, .. } => {
-                if *elapsed_s >= 14.5 {
-                    let fade = ((*elapsed_s - 14.5) / 1.0).clamp(0.0, 1.0);
-                    if let Some(white_tex) = self.white_tex {
-                        batcher.push(
-                            white_tex,
-                            BlendMode::Normal,
-                            FilterMode::Nearest,
-                            SpriteInstance::new([0.0, 0.0], [VIRTUAL_WIDTH, VIRTUAL_HEIGHT])
-                                .with_color([0.0, 0.0, 0.0, fade]),
-                        );
-                    }
-                }
+            ActiveCutsceneKind::EggnogErectOutro(st) => {
+                st.draw_overlay(batcher, self.white_tex, font, font_tex);
+            }
+            ActiveCutsceneKind::PhillyDoppelganger(st) => {
+                st.draw_overlay(batcher, self.white_tex, font, font_tex);
+            }
+            ActiveCutsceneKind::StressPicoOutro(st) => {
+                st.draw_overlay(batcher, self.white_tex, font, font_tex);
+            }
+            ActiveCutsceneKind::DarnellIntro(st) => {
+                st.draw_overlay(batcher, self.white_tex, font, font_tex);
+            }
+            ActiveCutsceneKind::SserafimIntro(st) => {
+                st.draw_overlay(batcher, self.white_tex, font, font_tex);
             }
         }
     }

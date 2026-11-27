@@ -19,8 +19,6 @@ const BG_WIDTH_FACTOR: f32 = 1.2;
 const BG_SCROLL_FACTOR_Y: f32 = 0.17;
 const ITEM_SCROLL_FACTOR_Y: f32 = 0.4;
 const CAM_FOLLOW_LERP: f32 = 0.06;
-const MAGENTA_FLICKER_DURATION_S: f32 = 1.1;
-const MAGENTA_FLICKER_INTERVAL_S: f32 = 0.15;
 const ITEM_FLICKER_DURATION_S: f32 = 1.0;
 const ITEM_FLICKER_INTERVAL_S: f32 = 0.06;
 const EXIT_FADE_DURATION_S: f32 = 0.4;
@@ -56,14 +54,12 @@ struct MenuItemEntry {
 #[derive(Debug)]
 pub struct MainMenuScreenState {
     bg_tex: Option<(TextureHandle, [f32; 2])>,
-    magenta_tex: Option<(TextureHandle, [f32; 2])>,
     items: Vec<MenuItemEntry>,
     selected: usize,
     flashing_lights: bool,
     anim_time_s: f32,
     cam_y: f32,
     target_cam_y: f32,
-    magenta_flicker_s: f32,
     phase: MainMenuPhase,
 }
 
@@ -76,7 +72,6 @@ impl MainMenuScreenState {
         remembered_selected: usize,
     ) -> Self {
         let bg_tex = load_menu_image(assets, gpu, "menuBG");
-        let magenta_tex = load_menu_image(assets, gpu, "menuBGMagenta");
 
         let specs = [
             (
@@ -101,7 +96,8 @@ impl MainMenuScreenState {
                 "mainmenu/merch",
                 "merch idle",
                 "merch selected",
-                true,
+                // On desktop (`#if !web`), Merch plays confirmMenu and flickers before opening the URL.
+                false,
             ),
             (
                 MainMenuChoice::Options,
@@ -158,14 +154,12 @@ impl MainMenuScreenState {
 
         Self {
             bg_tex,
-            magenta_tex,
             items,
             selected,
             flashing_lights,
             anim_time_s: 0.0,
             cam_y: initial_cam_y,
             target_cam_y: initial_cam_y,
-            magenta_flicker_s: -1.0,
             phase: MainMenuPhase::Idle,
         }
     }
@@ -184,7 +178,6 @@ impl MainMenuScreenState {
         if !self.items.is_empty() {
             self.selected = remembered_selected.min(self.items.len() - 1);
         }
-        self.magenta_flicker_s = -1.0;
         self.phase = MainMenuPhase::Idle;
         if let Some(item) = self.items.get(self.selected) {
             let y = Self::item_cam_y(item, true);
@@ -209,13 +202,6 @@ impl MainMenuScreenState {
         let lerp_t = 1.0 - (1.0 - CAM_FOLLOW_LERP).powf(dt * 60.0);
         self.cam_y += (self.target_cam_y - self.cam_y) * lerp_t;
 
-        if self.magenta_flicker_s >= 0.0 {
-            self.magenta_flicker_s += dt;
-            if self.magenta_flicker_s >= MAGENTA_FLICKER_DURATION_S {
-                self.magenta_flicker_s = -1.0;
-            }
-        }
-
         match self.phase {
             MainMenuPhase::Confirming { mut timer_s } => {
                 timer_s += dt;
@@ -224,11 +210,19 @@ impl MainMenuScreenState {
                         .items
                         .get(self.selected)
                         .map_or(MainMenuChoice::StoryMode, |i| i.choice);
-                    if choice == MainMenuChoice::Freeplay {
-                        self.phase = MainMenuPhase::Exited;
-                        return MenuCommand::EnterFreeplay;
+                    match choice {
+                        MainMenuChoice::Merch => {
+                            self.phase = MainMenuPhase::Idle;
+                            return MenuCommand::OpenUrl(MERCH_URL);
+                        }
+                        MainMenuChoice::Freeplay => {
+                            self.phase = MainMenuPhase::Exited;
+                            return MenuCommand::EnterFreeplay;
+                        }
+                        _ => {
+                            self.phase = MainMenuPhase::ExitingFade { timer_s: 0.0 };
+                        }
                     }
-                    self.phase = MainMenuPhase::ExitingFade { timer_s: 0.0 };
                 } else {
                     self.phase = MainMenuPhase::Confirming { timer_s };
                 }
@@ -274,7 +268,6 @@ impl MainMenuScreenState {
         }
 
         if input.accept_pressed && !self.items.is_empty() {
-            self.magenta_flicker_s = 0.0;
             if self.items[self.selected].fire_instantly {
                 return MenuCommand::OpenUrl(MERCH_URL);
             }
@@ -287,15 +280,7 @@ impl MainMenuScreenState {
 
     pub fn draw(&self, batcher: &mut SpriteBatcher, font: &BitmapFont, font_tex: TextureHandle) {
         let cam_scroll_y = self.cam_y - VIRTUAL_HEIGHT * 0.5;
-        let show_magenta = self.flashing_lights
-            && self.magenta_flicker_s >= 0.0
-            && (((self.magenta_flicker_s / MAGENTA_FLICKER_INTERVAL_S) as i32) & 1 == 0);
-        let bg = if show_magenta {
-            self.magenta_tex.or(self.bg_tex)
-        } else {
-            self.bg_tex
-        };
-        if let Some((tex, sz)) = bg {
+        if let Some((tex, sz)) = self.bg_tex {
             let draw_w = (VIRTUAL_WIDTH * BG_WIDTH_FACTOR).floor();
             let draw_h = sz[1] * (draw_w / sz[0].max(1.0));
             let y_shift = cam_scroll_y * BG_SCROLL_FACTOR_Y;

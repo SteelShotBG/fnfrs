@@ -1,52 +1,67 @@
+//! Zero-allocation V-Slice Pause Substate (`PauseSubState.hx`).
+
 use std::fmt::Write as _;
 
 use fnfrs_core::constants::{DEFAULT_DIFFICULTY, VIRTUAL_HEIGHT, VIRTUAL_WIDTH};
+use fnfrs_core::paths::AssetLocator;
 use fnfrs_render::{
-    BitmapFont, BlendMode, FilterMode, SpriteBatcher, SpriteInstance, StackTextBuffer, TextAlign,
-    TextStyle, TextureHandle,
+    AtlasFont, AtlasTextStyle, BitmapFont, BlendMode, FilterMode, GpuContext, SpriteBatcher,
+    SpriteInstance, StackTextBuffer, TextAlign, TextStyle, TextureHandle,
 };
 use winit::keyboard::KeyCode;
-/// Active page inside [`PauseMenuState`].
+
+use crate::camera::FlxEase;
+use crate::menus::load_menu_atlas_font;
+
+/// Active page / context inside [`PauseMenuState`] (`PauseMode` in `PauseSubState.hx`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum PauseMenuMode {
     #[default]
     Main,
     Difficulty,
+    Conversation,
+    Cutscene,
 }
 
-/// Standard V-Slice pause menu options.
+/// Pause menu options matching `PauseSubState.hx`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PauseMenuOption {
     Resume,
     RestartSong,
     ChangeDifficulty,
-    TogglePractice,
-    ToggleBotplay,
-    ToggleDownscroll,
+    EnablePracticeMode,
+    SkipCutscene,
+    RestartCutscene,
+    SkipDialogue,
+    RestartDialogue,
     Exit,
 }
 
 impl PauseMenuOption {
-    /// Human-readable label shown on screen.
     #[must_use]
     pub const fn label(self) -> &'static str {
         match self {
             Self::Resume => "Resume",
             Self::RestartSong => "Restart Song",
             Self::ChangeDifficulty => "Change Difficulty",
-            Self::TogglePractice => "Toggle Practice Mode",
-            Self::ToggleBotplay => "Toggle Botplay",
-            Self::ToggleDownscroll => "Toggle Downscroll",
-            Self::Exit => "Exit",
+            Self::EnablePracticeMode => "Enable Practice Mode",
+            Self::SkipCutscene => "Skip Cutscene",
+            Self::RestartCutscene => "Restart Cutscene",
+            Self::SkipDialogue => "Skip Dialogue",
+            Self::RestartDialogue => "Restart Dialogue",
+            Self::Exit => "Exit to Menu",
         }
     }
 }
 
-/// Discrete input snapshot consumed by [`PauseMenuState::update`].
+/// Discrete per-frame input snapshot consumed by [`PauseMenuState::update`].
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct PauseMenuInput {
     pub up_pressed: bool,
     pub down_pressed: bool,
+    pub up_held: bool,
+    pub down_held: bool,
+    pub shift_held: bool,
     pub accept_pressed: bool,
     pub back_pressed: bool,
 }
@@ -59,30 +74,45 @@ impl PauseMenuInput {
             KeyCode::ArrowUp | KeyCode::KeyW => Self {
                 up_pressed: true,
                 down_pressed: false,
+                up_held: true,
+                down_held: false,
+                shift_held: false,
                 accept_pressed: false,
                 back_pressed: false,
             },
             KeyCode::ArrowDown | KeyCode::KeyS => Self {
                 up_pressed: false,
                 down_pressed: true,
+                up_held: false,
+                down_held: true,
+                shift_held: false,
                 accept_pressed: false,
                 back_pressed: false,
             },
             KeyCode::Enter | KeyCode::Space => Self {
                 up_pressed: false,
                 down_pressed: false,
+                up_held: false,
+                down_held: false,
+                shift_held: false,
                 accept_pressed: true,
                 back_pressed: false,
             },
             KeyCode::Escape | KeyCode::Backspace => Self {
                 up_pressed: false,
                 down_pressed: false,
+                up_held: false,
+                down_held: false,
+                shift_held: false,
                 accept_pressed: false,
                 back_pressed: true,
             },
             _ => Self {
                 up_pressed: false,
                 down_pressed: false,
+                up_held: false,
+                down_held: false,
+                shift_held: false,
                 accept_pressed: false,
                 back_pressed: false,
             },
@@ -90,7 +120,7 @@ impl PauseMenuInput {
     }
 }
 
-/// High-level action emitted by [`PauseMenuState::update`] when the player confirms an entry.
+/// High-level action emitted by [`PauseMenuState::update`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PauseMenuAction {
     None,
@@ -98,12 +128,18 @@ pub enum PauseMenuAction {
     RestartSong,
     ChangeDifficulty(usize),
     TogglePractice,
-    ToggleBotplay,
-    ToggleDownscroll,
+    SkipCutscene,
+    RestartCutscene,
+    SkipDialogue,
+    RestartDialogue,
     Exit,
 }
 
 const MAX_PAUSE_MENU_ITEMS: usize = 8;
+const CHARTER_FADE_DELAY_S: f32 = 15.0;
+const CHARTER_FADE_DUR_S: f32 = 0.75;
+const MUSIC_FADE_IN_S: f32 = 5.0;
+const MUSIC_FINAL_VOLUME: f32 = 0.75;
 
 /// Zero-allocation V-Slice pause menu state (`PauseSubState.hx`).
 #[derive(Debug, Clone)]
@@ -111,18 +147,26 @@ pub struct PauseMenuState {
     pub is_open: bool,
     pub mode: PauseMenuMode,
     pub selected: usize,
+    pub open_time_s: f32,
     pub bg_alpha: f32,
-    pub metadata_alpha: f32,
+    pub music_gain: f32,
     pub is_practice: bool,
-    pub is_botplay: bool,
-    pub is_downscroll: bool,
     pub death_count: u32,
+    pub global_offset_ms: f32,
+    pub offset_dirty: bool,
+    pub scroll_sfx_queued: bool,
+    fast_offset: bool,
+    offset_hold_s: f32,
+
     pub song_name: StackTextBuffer<64>,
+    pub artist: StackTextBuffer<64>,
+    pub charter: StackTextBuffer<64>,
     pub difficulty: StackTextBuffer<32>,
     difficulties: [StackTextBuffer<32>; MAX_PAUSE_MENU_ITEMS],
     difficulty_count: usize,
     item_x: [f32; MAX_PAUSE_MENU_ITEMS],
     item_y: [f32; MAX_PAUSE_MENU_ITEMS],
+    bold_font: Option<AtlasFont>,
     just_opened: bool,
 }
 
@@ -133,13 +177,29 @@ impl Default for PauseMenuState {
 }
 
 impl PauseMenuState {
-    const MAIN_OPTIONS: [PauseMenuOption; 7] = [
+    const MAIN_OPTIONS_FULL: [PauseMenuOption; 5] = [
         PauseMenuOption::Resume,
         PauseMenuOption::RestartSong,
         PauseMenuOption::ChangeDifficulty,
-        PauseMenuOption::TogglePractice,
-        PauseMenuOption::ToggleBotplay,
-        PauseMenuOption::ToggleDownscroll,
+        PauseMenuOption::EnablePracticeMode,
+        PauseMenuOption::Exit,
+    ];
+    const MAIN_OPTIONS_NO_PRACTICE: [PauseMenuOption; 4] = [
+        PauseMenuOption::Resume,
+        PauseMenuOption::RestartSong,
+        PauseMenuOption::ChangeDifficulty,
+        PauseMenuOption::Exit,
+    ];
+    const CUTSCENE_OPTIONS: [PauseMenuOption; 4] = [
+        PauseMenuOption::Resume,
+        PauseMenuOption::SkipCutscene,
+        PauseMenuOption::RestartCutscene,
+        PauseMenuOption::Exit,
+    ];
+    const CONVERSATION_OPTIONS: [PauseMenuOption; 4] = [
+        PauseMenuOption::Resume,
+        PauseMenuOption::SkipDialogue,
+        PauseMenuOption::RestartDialogue,
         PauseMenuOption::Exit,
     ];
 
@@ -150,27 +210,44 @@ impl PauseMenuState {
             is_open: false,
             mode: PauseMenuMode::Main,
             selected: 0,
+            open_time_s: 0.0,
             bg_alpha: 0.0,
-            metadata_alpha: 0.0,
+            music_gain: 0.0,
             is_practice: false,
-            is_botplay: false,
-            is_downscroll: false,
             death_count: 0,
+            global_offset_ms: 0.0,
+            offset_dirty: false,
+            scroll_sfx_queued: false,
+            fast_offset: false,
+            offset_hold_s: 0.0,
             song_name: StackTextBuffer::new(),
+            artist: StackTextBuffer::new(),
+            charter: StackTextBuffer::new(),
             difficulty: StackTextBuffer::new(),
             difficulties: std::array::from_fn(|_| StackTextBuffer::new()),
             difficulty_count: 0,
             item_x: [90.0; MAX_PAUSE_MENU_ITEMS],
             item_y: [VIRTUAL_HEIGHT * 0.48; MAX_PAUSE_MENU_ITEMS],
+            bold_font: None,
             just_opened: false,
         };
+        let _ = state.artist.write_str("Unknown");
+        let _ = state.charter.write_str("Unknown");
         state.set_song_info(song_name, difficulty);
         state.set_difficulties(&["easy", "normal", "hard"]);
         state.snap_item_positions();
         state
     }
 
-    /// Updates displayed song metadata with zero heap allocations.
+    /// Loads `fonts/bold` once at gameplay init so pause entries render as V-Slice bold AtlasText.
+    pub fn load_atlas_font(&mut self, assets: &AssetLocator, gpu: &mut GpuContext) {
+        let font = load_menu_atlas_font(assets, gpu, true);
+        if font.is_loaded() {
+            self.bold_font = Some(font);
+        }
+    }
+
+    /// Updates displayed song metadata (`song_name`, `difficulty`).
     pub fn set_song_info(&mut self, song_name: &str, difficulty: &str) {
         self.song_name.clear();
         let _ = self.song_name.write_str(song_name);
@@ -178,9 +255,18 @@ impl PauseMenuState {
         let _ = self.difficulty.write_str(difficulty);
     }
 
+    /// Updates artist & charter metadata strings displayed cleanly top-right.
+    pub fn set_credits(&mut self, artist: &str, charter: &str) {
+        self.artist.clear();
+        let a = if artist.trim().is_empty() { "Unknown" } else { artist.trim() };
+        let _ = self.artist.write_str(a);
+        self.charter.clear();
+        let c = if charter.trim().is_empty() { "Unknown" } else { charter.trim() };
+        let _ = self.charter.write_str(c);
+    }
+
     /// Populates available difficulties for the `"Change Difficulty"` submenu.
     pub fn set_difficulties(&mut self, diffs: &[&str]) {
-        // Reserve 1 slot for trailing "Back".
         let cap = (MAX_PAUSE_MENU_ITEMS - 1).min(diffs.len());
         self.difficulty_count = cap;
         for (i, d) in diffs.iter().take(cap).enumerate() {
@@ -189,16 +275,32 @@ impl PauseMenuState {
         }
     }
 
-    /// Opens the pause menu and starts the fade-in transition (`PauseSubState.create`).
-    pub fn open(&mut self, is_botplay: bool, is_downscroll: bool, death_count: u32) {
+    /// Opens the standard song pause menu (`PauseSubState.create`).
+    pub fn open(&mut self, _is_botplay: bool, _is_downscroll: bool, death_count: u32) {
+        self.open_with_mode(PauseMenuMode::Main, self.is_practice, death_count, self.global_offset_ms);
+    }
+
+    /// Opens the pause menu in a specific `PauseMenuMode` (`Main`, `Conversation`, `Cutscene`).
+    pub fn open_with_mode(
+        &mut self,
+        mode: PauseMenuMode,
+        is_practice: bool,
+        death_count: u32,
+        global_offset_ms: f32,
+    ) {
         self.is_open = true;
-        self.mode = PauseMenuMode::Main;
+        self.mode = mode;
         self.selected = 0;
+        self.open_time_s = 0.0;
         self.bg_alpha = 0.0;
-        self.metadata_alpha = 0.0;
-        self.is_botplay = is_botplay;
-        self.is_downscroll = is_downscroll;
+        self.music_gain = 0.0;
+        self.is_practice = is_practice;
         self.death_count = death_count;
+        self.global_offset_ms = global_offset_ms;
+        self.offset_dirty = false;
+        self.scroll_sfx_queued = false;
+        self.fast_offset = false;
+        self.offset_hold_s = 0.0;
         self.just_opened = true;
         self.snap_item_positions();
     }
@@ -209,23 +311,35 @@ impl PauseMenuState {
         self.just_opened = false;
     }
 
+    #[must_use]
+    fn current_main_slice(&self) -> &[PauseMenuOption] {
+        match self.mode {
+            PauseMenuMode::Main => {
+                if self.is_practice {
+                    &Self::MAIN_OPTIONS_NO_PRACTICE
+                } else {
+                    &Self::MAIN_OPTIONS_FULL
+                }
+            }
+            PauseMenuMode::Cutscene => &Self::CUTSCENE_OPTIONS,
+            PauseMenuMode::Conversation => &Self::CONVERSATION_OPTIONS,
+            PauseMenuMode::Difficulty => &[],
+        }
+    }
+
     /// Number of visible entries in the current [`PauseMenuMode`].
     #[must_use]
     pub fn item_count(&self) -> usize {
         match self.mode {
-            PauseMenuMode::Main => Self::MAIN_OPTIONS.len(),
             PauseMenuMode::Difficulty => self.difficulty_count + 1,
+            _ => self.current_main_slice().len(),
         }
     }
 
-    /// Returns the main-menu option at `self.selected` when in [`PauseMenuMode::Main`].
+    /// Returns the option at `self.selected` when not in `Difficulty`.
     #[must_use]
     pub fn selected_main_option(&self) -> Option<PauseMenuOption> {
-        if self.mode == PauseMenuMode::Main {
-            Self::MAIN_OPTIONS.get(self.selected).copied()
-        } else {
-            None
-        }
+        self.current_main_slice().get(self.selected).copied()
     }
 
     /// Returns the difficulty string at index `idx` in [`PauseMenuMode::Difficulty`].
@@ -245,8 +359,12 @@ impl PauseMenuState {
             self.selected = 0;
             return;
         }
+        let prev = self.selected;
         let next = (self.selected as isize + delta as isize).rem_euclid(len);
         self.selected = next as usize;
+        if self.selected != prev {
+            self.scroll_sfx_queued = true;
+        }
     }
 
     /// Advances animations and processes menu navigation with zero heap allocations.
@@ -255,34 +373,56 @@ impl PauseMenuState {
             return PauseMenuAction::None;
         }
 
-        let dt = elapsed_s.max(0.0);
-        // Background dims smoothly toward 0.6 (`PauseSubState.transitionIn`).
-        let alpha_t = 1.0 - (-4.5 * dt).exp();
-        self.bg_alpha += (0.6 - self.bg_alpha) * alpha_t;
-        self.metadata_alpha += (1.0 - self.metadata_alpha) * alpha_t;
+        let dt = elapsed_s.clamp(0.0, 0.1);
+        self.open_time_s += dt;
+        self.music_gain = (self.open_time_s / MUSIC_FADE_IN_S).clamp(0.0, 1.0) * MUSIC_FINAL_VOLUME;
+        let bg_t = (self.open_time_s / 0.8).clamp(0.0, 1.0);
+        self.bg_alpha = FlxEase::QuartOut.eval(bg_t) * 0.6;
 
-        // Smooth diagonal menu cascade (`PauseSubState.changeSelection`).
-        let item_t = 1.0 - (-12.0 * dt).exp();
+        // Smooth diagonal cascade matching `FlxMath.remapToRange((i - cur), 0, 1, 0, 1.3)`.
+        let item_t = 1.0 - (-10.0 * dt).exp();
         let count = self.item_count().min(MAX_PAUSE_MENU_ITEMS);
         for i in 0..count {
-            let rel = i as f32 - self.selected as f32;
-            let target_x = rel * 26.0 + 90.0;
-            let target_y = rel * 110.0 + VIRTUAL_HEIGHT * 0.48;
+            let rel = (i as f32 - self.selected as f32) * 1.3;
+            let target_x = rel * 20.0 + 90.0;
+            let target_y = rel * 120.0 + VIRTUAL_HEIGHT * 0.48;
             self.item_x[i] += (target_x - self.item_x[i]) * item_t;
             self.item_y[i] += (target_y - self.item_y[i]) * item_t;
         }
+
+        if self.just_opened {
+            self.just_opened = false;
+            return PauseMenuAction::None;
+        }
+
+        // Shift + Up/Down adjusts global audio offset (`PauseSubState.handleModifyingOffsets`).
+        if input.shift_held && (input.up_held || input.down_held || input.up_pressed || input.down_pressed) {
+            self.offset_hold_s += dt;
+            let dir = if input.up_held || input.up_pressed { 1.0 } else { -1.0 };
+            if !self.fast_offset {
+                if self.offset_hold_s > 0.5 {
+                    self.fast_offset = true;
+                    self.offset_hold_s = 0.0;
+                }
+                if input.up_pressed || input.down_pressed {
+                    self.global_offset_ms = (self.global_offset_ms + dir).clamp(-1500.0, 1500.0);
+                    self.offset_dirty = true;
+                }
+            } else {
+                self.global_offset_ms =
+                    (self.global_offset_ms + dir * dt * 30.0).clamp(-1500.0, 1500.0);
+                self.offset_dirty = true;
+            }
+            return PauseMenuAction::None;
+        }
+        self.fast_offset = false;
+        self.offset_hold_s = 0.0;
 
         if input.up_pressed {
             self.move_selection(-1);
         }
         if input.down_pressed {
             self.move_selection(1);
-        }
-
-        // Guard against closing on the exact frame the pause key opened the menu.
-        if self.just_opened {
-            self.just_opened = false;
-            return PauseMenuAction::None;
         }
 
         if input.back_pressed {
@@ -304,59 +444,65 @@ impl PauseMenuState {
     }
 
     fn activate_selected(&mut self) -> PauseMenuAction {
-        match self.mode {
-            PauseMenuMode::Main => {
-                let Some(opt) = self.selected_main_option() else {
-                    return PauseMenuAction::None;
-                };
-                match opt {
-                    PauseMenuOption::Resume => {
-                        self.close();
-                        PauseMenuAction::Resume
-                    }
-                    PauseMenuOption::RestartSong => {
-                        self.close();
-                        PauseMenuAction::RestartSong
-                    }
-                    PauseMenuOption::ChangeDifficulty => {
-                        self.mode = PauseMenuMode::Difficulty;
-                        self.selected = 0;
-                        self.snap_item_positions();
-                        PauseMenuAction::None
-                    }
-                    PauseMenuOption::TogglePractice => {
-                        self.is_practice = !self.is_practice;
-                        PauseMenuAction::TogglePractice
-                    }
-                    PauseMenuOption::ToggleBotplay => {
-                        self.is_botplay = !self.is_botplay;
-                        PauseMenuAction::ToggleBotplay
-                    }
-                    PauseMenuOption::ToggleDownscroll => {
-                        self.is_downscroll = !self.is_downscroll;
-                        PauseMenuAction::ToggleDownscroll
-                    }
-                    PauseMenuOption::Exit => {
-                        self.close();
-                        PauseMenuAction::Exit
-                    }
-                }
+        if self.mode == PauseMenuMode::Difficulty {
+            if self.selected >= self.difficulty_count {
+                self.mode = PauseMenuMode::Main;
+                self.selected = 0;
+                self.snap_item_positions();
+                return PauseMenuAction::None;
             }
-            PauseMenuMode::Difficulty => {
-                if self.selected >= self.difficulty_count {
-                    self.mode = PauseMenuMode::Main;
+            let chosen = self.selected;
+            self.difficulty.clear();
+            let _ = self.difficulty.write_str(self.difficulties[chosen].as_str());
+            self.close();
+            return PauseMenuAction::ChangeDifficulty(chosen);
+        }
+
+        let Some(opt) = self.selected_main_option() else {
+            return PauseMenuAction::None;
+        };
+        match opt {
+            PauseMenuOption::Resume => {
+                self.close();
+                PauseMenuAction::Resume
+            }
+            PauseMenuOption::RestartSong => {
+                self.close();
+                PauseMenuAction::RestartSong
+            }
+            PauseMenuOption::ChangeDifficulty => {
+                self.mode = PauseMenuMode::Difficulty;
+                self.selected = 0;
+                self.snap_item_positions();
+                PauseMenuAction::None
+            }
+            PauseMenuOption::EnablePracticeMode => {
+                self.is_practice = true;
+                if self.selected >= self.item_count() {
                     self.selected = 0;
-                    self.snap_item_positions();
-                    PauseMenuAction::None
-                } else {
-                    let chosen = self.selected;
-                    if chosen < self.difficulty_count {
-                        self.difficulty.clear();
-                        let _ = self.difficulty.write_str(self.difficulties[chosen].as_str());
-                    }
-                    self.close();
-                    PauseMenuAction::ChangeDifficulty(chosen)
                 }
+                self.snap_item_positions();
+                PauseMenuAction::TogglePractice
+            }
+            PauseMenuOption::SkipCutscene => {
+                self.close();
+                PauseMenuAction::SkipCutscene
+            }
+            PauseMenuOption::RestartCutscene => {
+                self.close();
+                PauseMenuAction::RestartCutscene
+            }
+            PauseMenuOption::SkipDialogue => {
+                self.close();
+                PauseMenuAction::SkipDialogue
+            }
+            PauseMenuOption::RestartDialogue => {
+                self.close();
+                PauseMenuAction::RestartDialogue
+            }
+            PauseMenuOption::Exit => {
+                self.close();
+                PauseMenuAction::Exit
             }
         }
     }
@@ -364,14 +510,21 @@ impl PauseMenuState {
     fn snap_item_positions(&mut self) {
         let count = self.item_count().min(MAX_PAUSE_MENU_ITEMS);
         for i in 0..count {
-            let rel = i as f32 - self.selected as f32;
-            self.item_x[i] = rel * 26.0 + 90.0;
-            self.item_y[i] = rel * 110.0 + VIRTUAL_HEIGHT * 0.48;
+            let rel = (i as f32 - self.selected as f32) * 1.3;
+            self.item_x[i] = rel * 20.0 + 90.0;
+            self.item_y[i] = rel * 120.0 + VIRTUAL_HEIGHT * 0.48;
         }
     }
 
-    /// Renders the dimmed overlay, scrolling option entries, and top-right metadata with
-    /// zero heap allocations.
+    /// Computes staggered fade/drop for metadata lines (`transitionMetadataIn`: `delay = 0.1*(idx+1)`).
+    fn metadata_anim(&self, idx: usize) -> (f32, f32) {
+        let delay = 0.1 * (idx as f32 + 1.0);
+        let t = ((self.open_time_s - delay) / 1.8).clamp(0.0, 1.0);
+        let e = FlxEase::QuartOut.eval(t);
+        (e, e * 5.0)
+    }
+
+    /// Renders the dimmed overlay, AtlasText options, and top/bottom-right metadata (zero allocs).
     pub fn draw(
         &self,
         batcher: &mut SpriteBatcher,
@@ -393,106 +546,236 @@ impl PauseMenuState {
         );
 
         let is_small_font = font.line_height() <= 10.0;
-        let entry_scale = if is_small_font { 4.0 } else { 2.0 };
-        let meta_scale = if is_small_font { 2.0 } else { 1.1 };
+        let fallback_scale = if is_small_font { 4.0 } else { 2.0 };
+        let meta_scale = if is_small_font { 2.0 } else { 1.8 };
+        let info_scale = if is_small_font { 1.0 } else { 0.95 };
         let mut line_buf = StackTextBuffer::<64>::new();
 
-        // 2. Menu options.
+        // 2. Menu options (white bold `AtlasText`, selected `1.0` alpha, unselected `0.6`).
         let count = self.item_count().min(MAX_PAUSE_MENU_ITEMS);
         for i in 0..count {
-            let is_cur = i == self.selected;
-            let alpha = if is_cur { 1.0 } else { 0.55 };
-            let color = if is_cur {
-                [1.0, 0.95, 0.45, alpha]
-            } else {
-                [1.0, 1.0, 1.0, alpha]
-            };
-
+            let alpha = if i == self.selected { 1.0 } else { 0.6 };
             line_buf.clear();
-            match self.mode {
-                PauseMenuMode::Main => {
-                    let opt = Self::MAIN_OPTIONS[i];
-                    match opt {
-                        PauseMenuOption::TogglePractice => {
-                            let state_str = if self.is_practice { "ON" } else { "OFF" };
-                            let _ = write!(line_buf, "Practice Mode: {state_str}");
-                        }
-                        PauseMenuOption::ToggleBotplay => {
-                            let state_str = if self.is_botplay { "ON" } else { "OFF" };
-                            let _ = write!(line_buf, "Botplay: {state_str}");
-                        }
-                        PauseMenuOption::ToggleDownscroll => {
-                            let state_str = if self.is_downscroll { "ON" } else { "OFF" };
-                            let _ = write!(line_buf, "Downscroll: {state_str}");
-                        }
-                        _ => {
-                            let _ = line_buf.write_str(opt.label());
-                        }
-                    }
+            if self.mode == PauseMenuMode::Difficulty {
+                if i < self.difficulty_count {
+                    write_title_case(&mut line_buf, self.difficulties[i].as_str());
+                } else {
+                    let _ = line_buf.write_str("Back");
                 }
-                PauseMenuMode::Difficulty => {
-                    if i < self.difficulty_count {
-                        let _ = line_buf.write_str(self.difficulties[i].as_str());
-                    } else {
-                        let _ = line_buf.write_str("Back");
-                    }
-                }
+            } else {
+                let _ = line_buf.write_str(self.current_main_slice()[i].label());
             }
 
-            let style = TextStyle {
-                scale: entry_scale,
-                color,
-                align: TextAlign::Left,
-                ..Default::default()
-            };
-            font.draw_bytes_outlined(
-                batcher,
-                font_tex,
-                line_buf.as_bytes(),
-                [self.item_x[i].round(), self.item_y[i].round()],
-                &style,
-                [0.0, 0.0, 0.0, alpha],
-            );
+            let pos = [self.item_x[i].round(), self.item_y[i].round()];
+            if let Some(atlas_font) = &self.bold_font {
+                atlas_font.draw_bytes(
+                    batcher,
+                    line_buf.as_bytes(),
+                    pos,
+                    &AtlasTextStyle {
+                        scale: 1.0,
+                        color: [1.0, 1.0, 1.0, alpha],
+                        align: TextAlign::Left,
+                        time_s: self.open_time_s,
+                        animated: false,
+                        line_height: 70.0,
+                    },
+                );
+            } else {
+                font.draw_bytes_outlined(
+                    batcher,
+                    font_tex,
+                    line_buf.as_bytes(),
+                    pos,
+                    &TextStyle {
+                        scale: fallback_scale,
+                        color: [1.0, 1.0, 1.0, alpha],
+                        align: TextAlign::Left,
+                        ..Default::default()
+                    },
+                    [0.0, 0.0, 0.0, alpha],
+                );
+            }
         }
 
         // 3. Top-right metadata (`PauseSubState.buildMetadata`).
-        let meta_x = VIRTUAL_WIDTH - 32.0;
-        let meta_style = TextStyle {
-            scale: meta_scale,
-            color: [1.0, 1.0, 1.0, self.metadata_alpha],
-            align: TextAlign::Right,
-            ..Default::default()
+        let meta_x = VIRTUAL_WIDTH - 20.0;
+        let (a0, y0) = self.metadata_anim(0);
+        if a0 > 0.01 {
+            font.draw_bytes(
+                batcher,
+                font_tex,
+                self.song_name.as_bytes(),
+                meta_x,
+                15.0 + y0,
+                &TextStyle {
+                    scale: meta_scale,
+                    color: [1.0, 1.0, 1.0, a0],
+                    align: TextAlign::Right,
+                    ..Default::default()
+                },
+            );
+        }
+
+        // Artist / Charter swap every 15s (`CHARTER_FADE_DELAY`).
+        let (a1, y1) = self.metadata_anim(1);
+        let cycle = self.open_time_s % ((CHARTER_FADE_DELAY_S + CHARTER_FADE_DUR_S * 2.0) * 2.0);
+        let half = CHARTER_FADE_DELAY_S + CHARTER_FADE_DUR_S * 2.0;
+        let (show_charter, swap_alpha) = if cycle < CHARTER_FADE_DELAY_S {
+            (false, 1.0)
+        } else if cycle < CHARTER_FADE_DELAY_S + CHARTER_FADE_DUR_S {
+            (false, 1.0 - FlxEase::QuartOut.eval((cycle - CHARTER_FADE_DELAY_S) / CHARTER_FADE_DUR_S))
+        } else if cycle < half {
+            (true, FlxEase::QuartOut.eval((cycle - CHARTER_FADE_DELAY_S - CHARTER_FADE_DUR_S) / CHARTER_FADE_DUR_S))
+        } else if cycle < half + CHARTER_FADE_DELAY_S {
+            (true, 1.0)
+        } else if cycle < half + CHARTER_FADE_DELAY_S + CHARTER_FADE_DUR_S {
+            (true, 1.0 - FlxEase::QuartOut.eval((cycle - half - CHARTER_FADE_DELAY_S) / CHARTER_FADE_DUR_S))
+        } else {
+            (false, FlxEase::QuartOut.eval((cycle - half - CHARTER_FADE_DELAY_S - CHARTER_FADE_DUR_S) / CHARTER_FADE_DUR_S))
         };
+        let eff_a1 = a1 * swap_alpha.clamp(0.0, 1.0);
+        if eff_a1 > 0.01 {
+            line_buf.clear();
+            if show_charter {
+                let _ = write!(line_buf, "Charter: {}", self.charter.as_str());
+            } else {
+                let _ = write!(line_buf, "Artist: {}", self.artist.as_str());
+            }
+            font.draw_bytes(
+                batcher,
+                font_tex,
+                line_buf.as_bytes(),
+                meta_x,
+                47.0 + y1,
+                &TextStyle {
+                    scale: meta_scale,
+                    color: [1.0, 1.0, 1.0, eff_a1],
+                    align: TextAlign::Right,
+                    ..Default::default()
+                },
+            );
+        }
 
-        font.draw_bytes_outlined(
-            batcher,
-            font_tex,
-            self.song_name.as_bytes(),
-            [meta_x, 22.0],
-            &meta_style,
-            [0.0, 0.0, 0.0, self.metadata_alpha],
-        );
+        let (a2, y2) = self.metadata_anim(2);
+        if a2 > 0.01 {
+            line_buf.clear();
+            let _ = line_buf.write_str("Difficulty: ");
+            write_title_case(&mut line_buf, self.difficulty.as_str());
+            font.draw_bytes(
+                batcher,
+                font_tex,
+                line_buf.as_bytes(),
+                meta_x,
+                79.0 + y2,
+                &TextStyle {
+                    scale: meta_scale,
+                    color: [1.0, 1.0, 1.0, a2],
+                    align: TextAlign::Right,
+                    ..Default::default()
+                },
+            );
+        }
 
-        line_buf.clear();
-        let _ = write!(line_buf, "Difficulty: {}", self.difficulty.as_str());
-        font.draw_bytes_outlined(
-            batcher,
-            font_tex,
-            line_buf.as_bytes(),
-            [meta_x, 56.0],
-            &meta_style,
-            [0.0, 0.0, 0.0, self.metadata_alpha],
-        );
+        let (a3, y3) = self.metadata_anim(3);
+        if a3 > 0.01 {
+            line_buf.clear();
+            match self.mode {
+                PauseMenuMode::Conversation => {
+                    let _ = line_buf.write_str("Dialogue Paused");
+                }
+                PauseMenuMode::Cutscene => {
+                    let _ = line_buf.write_str("Video Paused");
+                }
+                PauseMenuMode::Main | PauseMenuMode::Difficulty => {
+                    let _ = write!(line_buf, "{} Blue Balls", self.death_count);
+                }
+            }
+            font.draw_bytes(
+                batcher,
+                font_tex,
+                line_buf.as_bytes(),
+                meta_x,
+                111.0 + y3,
+                &TextStyle {
+                    scale: meta_scale,
+                    color: [1.0, 1.0, 1.0, a3],
+                    align: TextAlign::Right,
+                    ..Default::default()
+                },
+            );
+        }
 
-        line_buf.clear();
-        let _ = write!(line_buf, "{} Blue Balls", self.death_count);
-        font.draw_bytes_outlined(
-            batcher,
-            font_tex,
-            line_buf.as_bytes(),
-            [meta_x, 90.0],
-            &meta_style,
-            [0.0, 0.0, 0.0, self.metadata_alpha],
-        );
+        if self.is_practice {
+            let (a4, y4) = self.metadata_anim(4);
+            if a4 > 0.01 {
+                font.draw_bytes(
+                    batcher,
+                    font_tex,
+                    b"PRACTICE MODE",
+                    meta_x,
+                    143.0 + y4,
+                    &TextStyle {
+                        scale: meta_scale,
+                        color: [1.0, 1.0, 1.0, a4],
+                        align: TextAlign::Right,
+                        ..Default::default()
+                    },
+                );
+            }
+        }
+
+        // 4. Bottom-right Global Offset indicator (`PauseSubState.hx:519-531`).
+        let (a5, y5) = self.metadata_anim(5);
+        if a5 > 0.01 {
+            let off_y = VIRTUAL_HEIGHT - 76.0 + y5;
+            line_buf.clear();
+            let _ = write!(line_buf, "Global Offset: {}ms", self.global_offset_ms.round() as i32);
+            font.draw_bytes(
+                batcher,
+                font_tex,
+                line_buf.as_bytes(),
+                meta_x,
+                off_y,
+                &TextStyle {
+                    scale: info_scale,
+                    color: [1.0, 1.0, 1.0, a5],
+                    align: TextAlign::Right,
+                    ..Default::default()
+                },
+            );
+            font.draw_bytes(
+                batcher,
+                font_tex,
+                b"Hold SHIFT-UP/DOWN,\nto change the offset.",
+                meta_x,
+                off_y + 20.0,
+                &TextStyle {
+                    scale: info_scale,
+                    color: [1.0, 1.0, 1.0, a5],
+                    align: TextAlign::Right,
+                    ..Default::default()
+                },
+            );
+        }
+    }
+}
+
+fn write_title_case(buf: &mut StackTextBuffer<64>, raw: &str) {
+    let mut cap_next = true;
+    for ch in raw.chars() {
+        if ch == '-' || ch == ' ' {
+            let _ = buf.write_char(' ');
+            cap_next = true;
+        } else if cap_next {
+            for u in ch.to_uppercase() {
+                let _ = buf.write_char(u);
+            }
+            cap_next = false;
+        } else {
+            for l in ch.to_lowercase() {
+                let _ = buf.write_char(l);
+            }
+        }
     }
 }

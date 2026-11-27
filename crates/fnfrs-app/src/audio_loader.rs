@@ -2,14 +2,14 @@ use std::fmt::Write as _;
 use std::fs;
 use std::path::PathBuf;
 
-use fnfrs_audio::{decode_file, AudioEngine, StreamStemSpec, StreamedSongConfig};
+use fnfrs_audio::{decode_file, AudioEngine, StreamStemSpec, StreamedSongConfig, TrackKind};
 use fnfrs_core::constants::DEFAULT_CHARACTER;
 use fnfrs_core::paths::AssetLocator;
 use fnfrs_core::schema::song::{SongChartData, SongMetadata};
-use fnfrs_game::cutscene::CutsceneAudioRequest;
+use fnfrs_game::cutscene::{CutsceneAudioQueue, CutsceneAudioRequest};
 use fnfrs_game::{
-    CountdownAssets, CountdownSfx, GameEventAction, GameOverAudioCue, GameplaySfxSlots,
-    HealthIcon, PlayScene, ScriptSfxSlots,
+    CountdownAssets, CountdownSfx, DeathQuoteKind, GameEventAction, GameOverAudioCue,
+    GameplaySfxSlots, HealthIcon, PlayScene, ScriptSfxSlots,
 };
 use fnfrs_render::{GpuContext, StackTextBuffer};
 
@@ -43,6 +43,23 @@ pub(crate) struct CutsceneSfxSlots {
     pub lights_turn_on: Option<usize>,
     pub santa_emotion: Option<usize>,
     pub santa_shot: Option<usize>,
+    pub pico_gasp: Option<usize>,
+    pub pico_shoot: Option<usize>,
+    pub pico_spin: Option<usize>,
+    pub pico_cigarette: Option<usize>,
+    pub pico_cigarette2: Option<usize>,
+    pub pico_explode: Option<usize>,
+    pub stress_end: Option<usize>,
+    pub darnell_lighter: Option<usize>,
+    pub gun_prep: Option<usize>,
+    pub kick_can_up: Option<usize>,
+    pub kick_can_forward: Option<usize>,
+    pub shot1: Option<usize>,
+    pub darnell_laugh: Option<usize>,
+    pub nene_laugh: Option<usize>,
+    pub sserafim_start: Option<usize>,
+    pub death_quotes: [Option<usize>; 25],
+    pub death_quote_count: usize,
 }
 
 pub(crate) fn stream_single_track(engine: &mut AudioEngine, path: PathBuf) -> bool {
@@ -86,6 +103,25 @@ pub(crate) fn register_menu_sfx(assets: &AssetLocator, engine: &mut AudioEngine)
     slots
 }
 
+fn start_gameover_music(
+    assets: &AssetLocator,
+    engine: &mut AudioEngine,
+    primary: &str,
+    default_key: &str,
+    bare_key: &str,
+) -> bool {
+    if play_music_by_key(assets, engine, primary) {
+        return true;
+    }
+    if let Some(idx) = primary.rfind('-') {
+        let stripped = &primary[..idx];
+        if stripped != default_key && play_music_by_key(assets, engine, stripped) {
+            return true;
+        }
+    }
+    play_music_by_key(assets, engine, default_key) || play_music_by_key(assets, engine, bare_key)
+}
+
 pub(crate) fn handle_game_over_audio(
     assets: &AssetLocator,
     gp: &mut ActiveGameplay,
@@ -105,22 +141,54 @@ pub(crate) fn handle_game_over_audio(
         GameOverAudioCue::StartGameOverLoop => {
             let mut buf = StackTextBuffer::<64>::new();
             let primary = gp.scene.game_over.loop_music_key(&mut buf);
-            let fallback = "gameplay/gameover/gameOver";
-            if play_music_by_key(assets, engine, primary)
-                || play_music_by_key(assets, engine, fallback)
-                || play_music_by_key(assets, engine, "gameOver")
-            {
+            if start_gameover_music(
+                assets,
+                engine,
+                primary,
+                "gameplay/gameover/gameOver",
+                "gameOver",
+            ) {
+                let _ = engine.set_track_gain(TrackKind::Inst, 1.0);
                 gp.song_audio_replaced = true;
             }
+        }
+        GameOverAudioCue::StartGameOverLoopQuietWithQuote(_kind) => {
+            let mut buf = StackTextBuffer::<64>::new();
+            let primary = gp.scene.game_over.loop_music_key(&mut buf);
+            if start_gameover_music(
+                assets,
+                engine,
+                primary,
+                "gameplay/gameover/gameOver",
+                "gameOver",
+            ) {
+                let _ = engine.set_track_gain(TrackKind::Inst, 0.2);
+                gp.song_audio_replaced = true;
+            }
+            let count = gp.cutscene_sfx.death_quote_count;
+            if count > 0 {
+                let seed = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_or(0, |d| d.subsec_nanos() as usize);
+                if let Some(slot) = gp.cutscene_sfx.death_quotes[seed % count] {
+                    let _ = engine.play_sfx(slot, 1.0);
+                }
+            }
+        }
+        GameOverAudioCue::RestoreLoopMusicGain => {
+            let _ = engine.set_track_gain(TrackKind::Inst, 1.0);
         }
         GameOverAudioCue::PlayGameOverEnd => {
             let mut buf = StackTextBuffer::<64>::new();
             let primary = gp.scene.game_over.end_music_key(&mut buf);
-            let fallback = "gameplay/gameover/gameOverEnd";
-            if play_music_by_key(assets, engine, primary)
-                || play_music_by_key(assets, engine, fallback)
-                || play_music_by_key(assets, engine, "gameOverEnd")
-            {
+            if start_gameover_music(
+                assets,
+                engine,
+                primary,
+                "gameplay/gameover/gameOverEnd",
+                "gameOverEnd",
+            ) {
+                let _ = engine.set_track_gain(TrackKind::Inst, 1.0);
                 gp.song_audio_replaced = true;
             }
         }
@@ -175,14 +243,17 @@ pub(crate) fn load_song_chart(
     }
 }
 
-#[allow(clippy::type_complexity)]
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
 pub(crate) fn register_all_sfx(
     assets: &AssetLocator,
     engine: &mut AudioEngine,
     sample_rate: u32,
     countdown_assets: &mut CountdownAssets,
-    bf_is_pixel: bool,
+    blue_ball_suffix: &str,
+    song_id: &str,
     stage_id: &str,
+    quote_kind: DeathQuoteKind,
+    naughtyness: bool,
 ) -> (
     GameplaySfxSlots,
     Option<usize>,
@@ -226,20 +297,17 @@ pub(crate) fn register_all_sfx(
         }
     }
 
-    let loss_candidates: [&str; 3] = if bf_is_pixel {
-        [
-            "gameplay/gameover/fnf_loss_sfx-pixel",
-            "gameplay/gameover/fnf_loss_sfx",
-            "fnf_loss_sfx-pixel",
-        ]
-    } else {
-        [
-            "gameplay/gameover/fnf_loss_sfx",
-            "fnf_loss_sfx",
-            "fnf_loss_sfx",
-        ]
-    };
     let mut loss_slot = None;
+    let mut bb_primary = StackTextBuffer::<64>::new();
+    let _ = write!(bb_primary, "gameplay/gameover/fnf_loss_sfx{blue_ball_suffix}");
+    let mut bb_bare = StackTextBuffer::<48>::new();
+    let _ = write!(bb_bare, "fnf_loss_sfx{blue_ball_suffix}");
+    let loss_candidates = [
+        bb_primary.as_str(),
+        bb_bare.as_str(),
+        "gameplay/gameover/fnf_loss_sfx",
+        "fnf_loss_sfx",
+    ];
     for key in loss_candidates {
         let path = assets.sound(key);
         if let Ok(decoded) = decode_file(&path, sample_rate) {
@@ -305,21 +373,87 @@ pub(crate) fn register_all_sfx(
         }
     }
 
+    let song_lower = song_id.to_ascii_lowercase();
     let mut cs_slots = CutsceneSfxSlots::default();
-    for (slot_ref, key) in [
-        (&mut cs_slots.pixel_text, "pixelText"),
-        (&mut cs_slots.click_text, "clickText"),
-        (&mut cs_slots.angry_box, "ANGRY_TEXT_BOX"),
-        (&mut cs_slots.senpai_dies, "Senpai_Dies"),
-        (&mut cs_slots.lights_turn_on, "Lights_Turn_On"),
-        (&mut cs_slots.santa_emotion, "santa_emotion"),
-        (&mut cs_slots.santa_shot, "santa_shot_n_falls"),
-    ] {
+    let load_sfx = |slot_ref: &mut Option<usize>, key: &str, bank: &mut Vec<_>| {
         let path = assets.sound(key);
         if let Ok(decoded) = decode_file(&path, sample_rate) {
             *slot_ref = Some(bank.len());
             bank.push(decoded);
         }
+    };
+
+    if matches!(
+        song_lower.as_str(),
+        "senpai" | "roses" | "thorns" | "winter-horrorland"
+    ) {
+        load_sfx(&mut cs_slots.pixel_text, "pixelText", &mut bank);
+        load_sfx(&mut cs_slots.click_text, "clickText", &mut bank);
+        load_sfx(&mut cs_slots.angry_box, "ANGRY_TEXT_BOX", &mut bank);
+        load_sfx(&mut cs_slots.senpai_dies, "Senpai_Dies", &mut bank);
+        load_sfx(&mut cs_slots.lights_turn_on, "Lights_Turn_On", &mut bank);
+    }
+    if song_lower == "eggnog" {
+        load_sfx(&mut cs_slots.santa_emotion, "santa_emotion", &mut bank);
+        load_sfx(&mut cs_slots.santa_shot, "santa_shot_n_falls", &mut bank);
+    }
+    if stage_lower == "phillytrainerect" {
+        load_sfx(&mut cs_slots.pico_gasp, "cutscene/picoGasp", &mut bank);
+        load_sfx(&mut cs_slots.pico_shoot, "cutscene/picoShoot", &mut bank);
+        load_sfx(&mut cs_slots.pico_spin, "cutscene/picoSpin", &mut bank);
+        load_sfx(&mut cs_slots.pico_cigarette, "cutscene/picoCigarette", &mut bank);
+        load_sfx(&mut cs_slots.pico_cigarette2, "cutscene/picoCigarette2", &mut bank);
+        load_sfx(&mut cs_slots.pico_explode, "cutscene/picoExplode", &mut bank);
+    }
+    if song_lower == "stress" {
+        load_sfx(&mut cs_slots.stress_end, "erect/endCutscene", &mut bank);
+    }
+    if song_lower == "darnell" {
+        load_sfx(&mut cs_slots.darnell_lighter, "Darnell_Lighter", &mut bank);
+        load_sfx(&mut cs_slots.gun_prep, "Gun_Prep", &mut bank);
+        load_sfx(&mut cs_slots.kick_can_up, "Kick_Can_UP", &mut bank);
+        load_sfx(&mut cs_slots.kick_can_forward, "Kick_Can_FORWARD", &mut bank);
+        load_sfx(&mut cs_slots.shot1, "shot1", &mut bank);
+        load_sfx(&mut cs_slots.darnell_laugh, "cutscene/darnell_laugh", &mut bank);
+        load_sfx(&mut cs_slots.nene_laugh, "cutscene/nene_laugh", &mut bank);
+    }
+    if stage_lower == "sserafim" {
+        load_sfx(&mut cs_slots.sserafim_start, "cutscene/startCutscene", &mut bank);
+    }
+
+    match quote_kind {
+        DeathQuoteKind::Tankman => {
+            for i in 1..=25_u8 {
+                if !naughtyness && matches!(i, 1 | 3 | 8 | 13 | 17 | 21) {
+                    continue;
+                }
+                let mut key = StackTextBuffer::<48>::new();
+                let _ = write!(key, "jeffGameover/jeffGameover-{i}");
+                if let Ok(decoded) = decode_file(&assets.sound(key.as_str()), sample_rate) {
+                    let idx = cs_slots.death_quote_count;
+                    if idx < cs_slots.death_quotes.len() {
+                        cs_slots.death_quotes[idx] = Some(bank.len());
+                        cs_slots.death_quote_count += 1;
+                        bank.push(decoded);
+                    }
+                }
+            }
+        }
+        DeathQuoteKind::PicoHoldingNene => {
+            for i in 1..=10_u8 {
+                let mut key = StackTextBuffer::<48>::new();
+                let _ = write!(key, "jeffGameover-pico/jeffGameover-{i}");
+                if let Ok(decoded) = decode_file(&assets.sound(key.as_str()), sample_rate) {
+                    let idx = cs_slots.death_quote_count;
+                    if idx < cs_slots.death_quotes.len() {
+                        cs_slots.death_quotes[idx] = Some(bank.len());
+                        cs_slots.death_quote_count += 1;
+                        bank.push(decoded);
+                    }
+                }
+            }
+        }
+        DeathQuoteKind::None => {}
     }
 
     if !bank.is_empty() {
@@ -332,35 +466,58 @@ pub(crate) fn dispatch_cutscene_audio(
     assets: &AssetLocator,
     audio: Option<&mut AudioEngine>,
     sfx: CutsceneSfxSlots,
-    req: CutsceneAudioRequest,
+    queue: CutsceneAudioQueue,
 ) {
     let Some(engine) = audio else {
         return;
     };
-    match req {
-        CutsceneAudioRequest::None => {}
-        CutsceneAudioRequest::StopMusic => {
-            let _ = engine.stop_bg_loop();
-        }
-        CutsceneAudioRequest::PlayMusic { key, .. } => {
-            let path = assets.music(key);
-            if let Ok(decoded) = decode_file(&path, engine.sample_rate()) {
-                let _ = engine.start_bg_loop(decoded);
+    for &req in &queue.items[..queue.count] {
+        match req {
+            CutsceneAudioRequest::None => {}
+            CutsceneAudioRequest::StopMusic => {
+                let _ = engine.stop_bg_loop();
             }
-        }
-        CutsceneAudioRequest::PlaySound { key } => {
-            let slot = match key {
-                "pixelText" => sfx.pixel_text,
-                "clickText" => sfx.click_text,
-                "ANGRY_TEXT_BOX" => sfx.angry_box,
-                "Senpai_Dies" => sfx.senpai_dies,
-                "Lights_Turn_On" => sfx.lights_turn_on,
-                "santa_emotion" => sfx.santa_emotion,
-                "santa_shot_n_falls" => sfx.santa_shot,
-                _ => None,
-            };
-            if let Some(s) = slot {
-                let _ = engine.play_sfx(s, 0.9);
+            CutsceneAudioRequest::StopAllSfx => {
+                let _ = engine.stop_all_sfx();
+            }
+            CutsceneAudioRequest::PauseBgLoop(paused) => {
+                let _ = engine.set_bg_loop_paused(paused);
+            }
+            CutsceneAudioRequest::PlayMusic { key, .. } => {
+                let path = assets.music(key);
+                if let Ok(decoded) = decode_file(&path, engine.sample_rate()) {
+                    let _ = engine.start_bg_loop(decoded);
+                }
+            }
+            CutsceneAudioRequest::PlaySound { key } => {
+                let slot = match key {
+                    "pixelText" => sfx.pixel_text,
+                    "clickText" => sfx.click_text,
+                    "ANGRY_TEXT_BOX" => sfx.angry_box,
+                    "Senpai_Dies" => sfx.senpai_dies,
+                    "Lights_Turn_On" => sfx.lights_turn_on,
+                    "santa_emotion" => sfx.santa_emotion,
+                    "santa_shot_n_falls" => sfx.santa_shot,
+                    "cutscene/picoGasp" => sfx.pico_gasp,
+                    "cutscene/picoShoot" => sfx.pico_shoot,
+                    "cutscene/picoSpin" => sfx.pico_spin,
+                    "cutscene/picoCigarette" => sfx.pico_cigarette,
+                    "cutscene/picoCigarette2" => sfx.pico_cigarette2,
+                    "cutscene/picoExplode" => sfx.pico_explode,
+                    "erect/endCutscene" => sfx.stress_end,
+                    "Darnell_Lighter" => sfx.darnell_lighter,
+                    "Gun_Prep" => sfx.gun_prep,
+                    "Kick_Can_UP" => sfx.kick_can_up,
+                    "Kick_Can_FORWARD" => sfx.kick_can_forward,
+                    "shot1" => sfx.shot1,
+                    "cutscene/darnell_laugh" => sfx.darnell_laugh,
+                    "cutscene/nene_laugh" => sfx.nene_laugh,
+                    "cutscene/startCutscene" => sfx.sserafim_start,
+                    _ => None,
+                };
+                if let Some(s) = slot {
+                    let _ = engine.play_sfx(s, 0.9);
+                }
             }
         }
     }

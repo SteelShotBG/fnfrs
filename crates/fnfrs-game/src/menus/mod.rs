@@ -51,6 +51,8 @@ pub enum MenuCommand {
         variation: Option<String>,
     },
     StartStoryWeek {
+        level_id: String,
+        level_title: String,
         songs: Vec<String>,
         difficulty: String,
     },
@@ -311,6 +313,7 @@ pub(crate) fn level_sort_key(id: &str) -> (u8, String) {
         "week6" => 6,
         "week7" => 7,
         "weekend1" => 8,
+        "sserafim" => 9,
         _ => 20,
     };
     (rank, lower)

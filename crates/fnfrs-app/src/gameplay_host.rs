@@ -1,17 +1,19 @@
 use std::time::{Duration, Instant};
 
 use fnfrs_audio::AudioEngine;
-use fnfrs_core::constants::{DEFAULT_CHARACTER, DEFAULT_NOTE_STYLE, DEFAULT_STAGE};
+use fnfrs_core::constants::{DEFAULT_CHARACTER, DEFAULT_NOTE_STYLE, DEFAULT_STAGE, DEFAULT_VARIATION};
 use fnfrs_core::paths::AssetLocator;
 use fnfrs_core::save::SaveData;
+use fnfrs_core::scoring::ScoreTallies;
 use fnfrs_core::schema::song::SongNoteData;
-use fnfrs_game::cutscene::CutsceneController;
+use fnfrs_game::cutscene::{CutsceneAudioQueue, CutsceneController};
 use fnfrs_game::debug_display::DebugSnapshot;
 use fnfrs_game::{
     BaseCharacter, CharacterKind, CountdownAssets, GameOverAction, GameOverPhase,
-    GameplaySfxSlots, HealthIcon, InputQueue, KeyBinds, NativeScriptHost, NoteStyleAssets,
-    PauseMenuAction, PauseMenuInput, PlayConfig, PlayScene, PlaySceneConfig, PlaySession,
-    ResultsAction, ResultsRank, ScriptSfxSlots, SongEventQueue, Stage, StrumlineVisualStyle,
+    GameOverState, GameplaySfxSlots, HealthIcon, InputQueue, KeyBinds, NativeScriptHost,
+    NoteStyleAssets, PauseMenuAction, PauseMenuInput, PlayConfig, PlayScene, PlaySceneConfig,
+    PlaySession, ResultsAction, ResultsRank, ScriptSfxSlots, SongEventQueue, Stage,
+    StrumlineVisualStyle,
 };
 use fnfrs_render::GpuContext;
 use winit::event_loop::ActiveEventLoop;
@@ -35,6 +37,7 @@ pub(crate) struct GameplayLaunchOpts {
 
 pub(crate) struct ActiveGameplay {
     pub scene: PlayScene,
+    pub level_assets: AssetLocator,
     pub inputs: InputQueue,
     pub note_assets: NoteStyleAssets,
     pub visual_style: StrumlineVisualStyle,
@@ -50,6 +53,9 @@ pub(crate) struct ActiveGameplay {
     pub pause_started_at: Option<Instant>,
     pub paused_duration: Duration,
     pub pending_pause_input: PauseMenuInput,
+    pub pause_up_held: bool,
+    pub pause_down_held: bool,
+    pub pause_shift_held: bool,
     pub pending_overlay_accept: bool,
     pub pending_overlay_back: bool,
     pub start_time: Instant,
@@ -143,13 +149,18 @@ pub(crate) fn build_active_gameplay(
                 song_duration_ms = opt_dur;
             }
         }
+        let mut go_profile = GameOverState::new();
+        go_profile.set_character_profile(bf_id, dad_id, bf_is_pixel);
         let (miss_slots, loss_slot, script_slots, tray_slots, cs_slots) = register_all_sfx(
             &level_assets,
             engine,
             sample_rate,
             &mut countdown_assets,
-            bf_is_pixel,
+            go_profile.blue_ball_suffix.as_str(),
+            loaded_chart.song_id.as_str(),
             stage_id,
+            go_profile.quote_kind,
+            opts.naughtyness,
         );
         sfx_slots = miss_slots;
         game_over_loss_sfx_slot = loss_slot;
@@ -231,7 +242,12 @@ pub(crate) fn build_active_gameplay(
     }
     scripts.set_visualizer_audible(opts.master_volume > 0.0);
     scene.attach_scripts(scripts);
+    scene.pause_menu.load_atlas_font(&level_assets, gpu);
     if let Some(meta) = metadata {
+        scene.pause_menu.set_credits(
+            meta.artist.as_str(),
+            meta.charter.as_deref().unwrap_or("Unknown"),
+        );
         if !meta.play_data.difficulties.is_empty() {
             let mut diff_refs: Vec<&str> = Vec::with_capacity(meta.play_data.difficulties.len());
             for d in &meta.play_data.difficulties {
@@ -245,15 +261,19 @@ pub(crate) fn build_active_gameplay(
     let pre_req = cutscene.start_pre_song(
         &loaded_chart.song_id,
         loaded_chart.variation.as_deref(),
+        stage_id,
+        bf_id,
         opts.is_story_mode,
         opts.naughtyness,
         &level_assets,
         gpu,
         opts.master_volume,
+        &mut scene,
     );
     if cutscene.is_active() {
         scene.session.is_paused = true;
         scene.countdown.set_paused(true);
+        scene.hide_hud_for_cutscene = cutscene.hides_hud();
     }
     dispatch_cutscene_audio(&level_assets, audio.as_deref_mut(), cutscene_sfx, pre_req);
 
@@ -265,6 +285,7 @@ pub(crate) fn build_active_gameplay(
 
     ActiveGameplay {
         scene,
+        level_assets,
         inputs: InputQueue::new(opts.keybinds),
         note_assets,
         visual_style,
@@ -280,6 +301,9 @@ pub(crate) fn build_active_gameplay(
         pause_started_at: None,
         paused_duration: Duration::ZERO,
         pending_pause_input: PauseMenuInput::default(),
+        pause_up_held: false,
+        pause_down_held: false,
+        pause_shift_held: false,
         pending_overlay_accept: false,
         pending_overlay_back: false,
         start_time: now,
@@ -388,32 +412,144 @@ pub(crate) fn update_and_render_gameplay(
 
     let overlay_accept = std::mem::take(&mut gp.pending_overlay_accept);
     let overlay_back = std::mem::take(&mut gp.pending_overlay_back);
-    let pause_input = std::mem::take(&mut gp.pending_pause_input);
+    let mut pause_input = std::mem::take(&mut gp.pending_pause_input);
+    pause_input.up_held = gp.pause_up_held;
+    pause_input.down_held = gp.pause_down_held;
+    pause_input.shift_held = gp.pause_shift_held;
 
-    if gp.cutscene.is_active() {
-        let (done, audio_req) = gp.cutscene.update(
+    if gp.scene.pause_menu.is_open {
+        let action = gp.scene.pause_menu.update(elapsed_s, pause_input);
+        if gp.scene.pause_menu.scroll_sfx_queued {
+            gp.scene.pause_menu.scroll_sfx_queued = false;
+            if let (Some(slot), Some(engine)) = (state.menu_sfx.scroll, audio.as_deref_mut()) {
+                let _ = engine.play_sfx(slot, 0.4);
+            }
+        }
+        if gp.scene.pause_menu.offset_dirty {
+            gp.scene.pause_menu.offset_dirty = false;
+            state.save.options.audio_offset_ms = gp.scene.pause_menu.global_offset_ms;
+            let _ = state.save.save_to_disk();
+        }
+        if gp.scene.pause_menu.is_open {
+            if let Some(engine) = audio.as_deref_mut() {
+                let _ = engine.set_pause_loop_gain(gp.scene.pause_menu.music_gain);
+            }
+        }
+        match action {
+            PauseMenuAction::None => {}
+            PauseMenuAction::Resume => {
+                if let Some(engine) = audio.as_deref_mut() {
+                    let _ = engine.stop_pause_loop();
+                }
+                if gp.cutscene.is_active() {
+                    gp.cutscene.set_paused(false);
+                    if let Some(engine) = audio.as_deref_mut() {
+                        let _ = engine.set_bg_loop_paused(false);
+                    }
+                } else {
+                    gp.scene.session.is_paused = false;
+                    gp.scene.countdown.set_paused(false);
+                    if let Some(started) = gp.pause_started_at.take() {
+                        gp.paused_duration += now.saturating_duration_since(started);
+                    }
+                    if let Some(engine) = audio.as_deref_mut() {
+                        if !gp.scene.countdown.active && gp.has_song_audio {
+                            let _ = engine.play();
+                        }
+                    }
+                }
+            }
+            PauseMenuAction::RestartSong => {
+                if let Some(engine) = audio.as_deref_mut() {
+                    let _ = engine.stop_pause_loop();
+                    let _ = engine.stop_bg_loop();
+                }
+                restart_runtime_song(&state.assets, gp, audio.as_deref_mut(), now, false);
+            }
+            PauseMenuAction::ChangeDifficulty(idx) => {
+                if let Some(engine) = audio.as_deref_mut() {
+                    let _ = engine.stop_pause_loop();
+                    let _ = engine.stop_bg_loop();
+                }
+                if let Some(diff) = gp
+                    .scene
+                    .pause_menu
+                    .difficulty_label(idx)
+                    .map(str::to_owned)
+                {
+                    reload_difficulty(&state.assets, gp, audio.as_deref_mut(), &diff, now);
+                } else {
+                    restart_runtime_song(&state.assets, gp, audio.as_deref_mut(), now, false);
+                }
+            }
+            PauseMenuAction::TogglePractice => {
+                gp.scene.session.config.practice_mode = true;
+                gp.scene.session.refresh_hud();
+            }
+            PauseMenuAction::SkipCutscene | PauseMenuAction::SkipDialogue => {
+                if let Some(engine) = audio.as_deref_mut() {
+                    let _ = engine.stop_pause_loop();
+                }
+                let mut q = CutsceneAudioQueue::default();
+                if gp.cutscene.skip_active(&mut q) {
+                    dispatch_cutscene_audio(&gp.level_assets, audio.as_deref_mut(), gp.cutscene_sfx, q);
+                    if gp.waiting_post_cutscene {
+                        gp.waiting_post_cutscene = false;
+                        if complete_song_or_advance_story(state, audio, now) {
+                            return;
+                        }
+                    } else {
+                        gp.scene.session.is_paused = false;
+                        gp.scene.countdown.set_paused(false);
+                        gp.start_time = now;
+                        gp.paused_duration = Duration::ZERO;
+                    }
+                }
+            }
+            PauseMenuAction::RestartCutscene | PauseMenuAction::RestartDialogue => {
+                if let Some(engine) = audio.as_deref_mut() {
+                    let _ = engine.stop_pause_loop();
+                    let _ = engine.set_bg_loop_paused(false);
+                }
+                let mut q = CutsceneAudioQueue::default();
+                gp.cutscene.restart_active(&mut q);
+                dispatch_cutscene_audio(&gp.level_assets, audio.as_deref_mut(), gp.cutscene_sfx, q);
+            }
+            PauseMenuAction::Exit => {
+                if let Some(engine) = audio.as_deref_mut() {
+                    let _ = engine.stop_pause_loop();
+                    let _ = engine.stop_bg_loop();
+                }
+                gp.cutscene.set_paused(false);
+                return_to_menu(state, audio, event_loop);
+                return;
+            }
+        }
+    } else if gp.cutscene.is_active() {
+        let step = gp.cutscene.update_with_scene(
             elapsed_s,
             &state.gpu,
             state.sound_tray.effective_volume(),
             overlay_accept,
-            overlay_back,
+            &mut gp.scene,
         );
         dispatch_cutscene_audio(
-            &state.assets,
+            &gp.level_assets,
             audio.as_deref_mut(),
             gp.cutscene_sfx,
-            audio_req,
+            step.audio,
         );
-        if done {
+        if step.mute_opponent_vocals {
+            if let Some(engine) = audio.as_deref_mut() {
+                let _ = engine.set_track_gain(fnfrs_audio::TrackKind::OpponentVocals, 0.0);
+            }
+        }
+        if step.finished {
             if gp.waiting_post_cutscene {
                 gp.waiting_post_cutscene = false;
-                activate_results_screen(
-                    &state.assets,
-                    &mut state.gpu,
-                    &state.save,
-                    gp,
-                    audio.as_deref_mut(),
-                );
+                if complete_song_or_advance_story(state, audio, now) {
+                    return;
+                }
             } else {
                 gp.scene.session.is_paused = false;
                 gp.scene.countdown.set_paused(false);
@@ -431,41 +567,8 @@ pub(crate) fn update_and_render_gameplay(
             .update(elapsed_s, overlay_accept, overlay_back)
             == ResultsAction::Continue
         {
-            if state.return_target == ReturnTarget::StoryMenu
-                && state.story_playlist_idx + 1 < state.story_playlist.len()
-            {
-                state.story_playlist_idx += 1;
-                let next_song = state.story_playlist[state.story_playlist_idx].clone();
-                let diff = state.story_difficulty.clone();
-                purge_inactive_resources(state, audio.as_deref_mut(), ActiveScreen::Title);
-                state.screen = ActiveScreen::Gameplay;
-                let loaded = load_song_chart(&state.assets, &next_song, &diff, None);
-                state.gameplay = Some(build_active_gameplay(
-                    &state.assets,
-                    &mut state.gpu,
-                    audio,
-                    loaded,
-                    GameplayLaunchOpts {
-                        downscroll: state.downscroll_pref,
-                        botplay: state.botplay_pref,
-                        is_story_mode: true,
-                        naughtyness: state.save.options.naughtyness,
-                        master_volume: state.sound_tray.effective_volume(),
-                        keybinds: KeyBinds::from_names(&state.save.options.keybinds),
-                    },
-                    &mut state.menu_sfx,
-                    now,
-                ));
-                return;
-            }
-            if state.return_target == ReturnTarget::StoryMenu && !state.story_level_id.is_empty() {
-                state.save.record_level_score(
-                    &state.story_level_id,
-                    &state.story_difficulty,
-                    state.story_total_score,
-                );
-                state.story_total_score = 0;
-            }
+            state.story_total_score = 0;
+            state.story_tallies = ScoreTallies::default();
             return_to_menu(state, audio, event_loop);
             return;
         }
@@ -475,7 +578,7 @@ pub(crate) fn update_and_render_gameplay(
             .game_over
             .update(elapsed_s, overlay_accept, overlay_back);
         if let Some(cue) = go_events.audio_cue {
-            handle_game_over_audio(&state.assets, gp, audio.as_deref_mut(), cue);
+            handle_game_over_audio(&gp.level_assets, gp, audio.as_deref_mut(), cue);
         }
         if gp.scene.game_over.phase == GameOverPhase::DeathLoop && gp.song_audio_replaced {
             if let Some(engine) = audio.as_deref_mut() {
@@ -491,65 +594,6 @@ pub(crate) fn update_and_render_gameplay(
                 restart_runtime_song(&state.assets, gp, audio.as_deref_mut(), now, false);
             }
             GameOverAction::ExitToMenu => {
-                return_to_menu(state, audio, event_loop);
-                return;
-            }
-        }
-    } else if gp.scene.pause_menu.is_open {
-        let action = gp.scene.pause_menu.update(elapsed_s, pause_input);
-        match action {
-            PauseMenuAction::None => {}
-            PauseMenuAction::Resume => {
-                gp.scene.session.is_paused = false;
-                gp.scene.countdown.set_paused(false);
-                if let Some(started) = gp.pause_started_at.take() {
-                    gp.paused_duration += now.saturating_duration_since(started);
-                }
-                if let Some(engine) = audio.as_deref_mut() {
-                    let _ = engine.stop_bg_loop();
-                    if !gp.scene.countdown.active && gp.has_song_audio {
-                        let _ = engine.play();
-                    }
-                }
-            }
-            PauseMenuAction::RestartSong => {
-                if let Some(engine) = audio.as_deref_mut() {
-                    let _ = engine.stop_bg_loop();
-                }
-                restart_runtime_song(&state.assets, gp, audio.as_deref_mut(), now, false);
-            }
-            PauseMenuAction::ChangeDifficulty(idx) => {
-                if let Some(engine) = audio.as_deref_mut() {
-                    let _ = engine.stop_bg_loop();
-                }
-                if let Some(diff) = gp
-                    .scene
-                    .pause_menu
-                    .difficulty_label(idx)
-                    .map(str::to_owned)
-                {
-                    reload_difficulty(&state.assets, gp, audio.as_deref_mut(), &diff, now);
-                } else {
-                    restart_runtime_song(&state.assets, gp, audio.as_deref_mut(), now, false);
-                }
-            }
-            PauseMenuAction::TogglePractice => {
-                gp.scene.session.config.practice_mode = !gp.scene.session.config.practice_mode;
-                gp.scene.session.refresh_hud();
-            }
-            PauseMenuAction::ToggleBotplay => {
-                let next = !gp.scene.session.config.is_botplay;
-                gp.scene.session.set_botplay(next);
-                state.downscroll_pref = gp.scene.session.config.is_downscroll;
-                state.botplay_pref = next;
-            }
-            PauseMenuAction::ToggleDownscroll => {
-                let next = !gp.scene.session.config.is_downscroll;
-                gp.scene.session.set_downscroll(next);
-                state.downscroll_pref = next;
-                state.botplay_pref = gp.scene.session.config.is_botplay;
-            }
-            PauseMenuAction::Exit => {
                 return_to_menu(state, audio, event_loop);
                 return;
             }
@@ -620,6 +664,7 @@ pub(crate) fn update_and_render_gameplay(
         };
         if state.return_target == ReturnTarget::StoryMenu {
             state.story_total_score += gp.scene.results.score;
+            combine_story_tallies(&mut state.story_tallies, &gp.scene.results.tallies);
         }
         gp.scene.results.is_new_highscore = is_new;
 
@@ -630,28 +675,28 @@ pub(crate) fn update_and_render_gameplay(
             &gp.loaded_chart.song_id,
             gp.loaded_chart.variation.as_deref(),
             state.return_target == ReturnTarget::StoryMenu,
-            &state.assets,
+            &gp.level_assets,
             &mut state.gpu,
             state.sound_tray.effective_volume(),
+            &mut gp.scene,
         );
         if gp.cutscene.is_active() {
+            gp.scene.session.is_paused = true;
             gp.scene.results.is_active = false;
+            gp.scene.hide_hud_for_cutscene = gp.cutscene.hides_hud();
             gp.waiting_post_cutscene = true;
-            dispatch_cutscene_audio(&state.assets, audio.as_deref_mut(), gp.cutscene_sfx, post_req);
-        } else {
-            activate_results_screen(
-                &state.assets,
-                &mut state.gpu,
-                &state.save,
-                gp,
-                audio.as_deref_mut(),
-            );
+            dispatch_cutscene_audio(&gp.level_assets, audio.as_deref_mut(), gp.cutscene_sfx, post_req);
+        } else if complete_song_or_advance_story(state, audio, now) {
+            return;
         }
+    } else if let Some(cue) = step_events.game_over_events.audio_cue {
+        handle_game_over_audio(&gp.level_assets, gp, audio, cue);
     }
 
-    if let Some(cue) = step_events.game_over_events.audio_cue {
-        handle_game_over_audio(&state.assets, gp, audio, cue);
-    }
+    let Some(gp) = state.gameplay.as_mut() else {
+        return;
+    };
+    gp.scene.hide_hud_for_cutscene = gp.cutscene.is_active() && gp.cutscene.hides_hud();
 
     let hud_zoom = gp.scene.camera_rig.cam_hud.effective_zoom();
     state.stage_sprite_batcher.begin_frame();
@@ -675,6 +720,11 @@ pub(crate) fn update_and_render_gameplay(
         .overlay_sprite_batcher
         .set_virtual_projection(&state.gpu.queue);
 
+    let cam_pos = [
+        gp.scene.camera_rig.cam_game.scroll[0] - gp.scene.camera_rig.cam_game.shake_offset[0],
+        gp.scene.camera_rig.cam_game.scroll[1] - gp.scene.camera_rig.cam_game.shake_offset[1],
+    ];
+    let cam_zoom = gp.scene.camera_rig.cam_game.effective_zoom();
     gp.scene.draw(
         &mut state.stage_sprite_batcher,
         &mut state.bg_sprite_batcher,
@@ -687,12 +737,20 @@ pub(crate) fn update_and_render_gameplay(
         state.hud_font_tex,
     );
     if gp.cutscene.is_active() {
+        gp.cutscene
+            .draw_world(&mut state.stage_sprite_batcher, cam_pos, cam_zoom);
         gp.cutscene.draw(
             &mut state.overlay_sprite_batcher,
             &state.hud_font,
             state.hud_font_tex,
         );
     }
+    gp.scene.draw_pause_overlay(
+        &mut state.overlay_sprite_batcher,
+        gp.visual_style.white_texture,
+        &state.hud_font,
+        state.hud_font_tex,
+    );
 
     let snap_pos = gp.scene.session.conductor.song_position_ms;
     let snap_dur = gp.song_duration_ms.unwrap_or(0.0);
@@ -764,6 +822,100 @@ pub(crate) fn update_and_render_gameplay(
     present_single_batch(state, event_loop, clear_color, true);
 }
 
+fn combine_story_tallies(total: &mut ScoreTallies, song: &ScoreTallies) {
+    total.sick = total.sick.saturating_add(song.sick);
+    total.good = total.good.saturating_add(song.good);
+    total.bad = total.bad.saturating_add(song.bad);
+    total.shit = total.shit.saturating_add(song.shit);
+    total.missed = total.missed.saturating_add(song.missed);
+    total.max_combo = total.max_combo.max(song.max_combo);
+    total.total_notes_hit = total.total_notes_hit.saturating_add(song.total_notes_hit);
+    total.total_notes = total.total_notes.saturating_add(song.total_notes);
+}
+
+/// Advances to the next Story Mode track without showing Results, or displays
+/// the final song / combined Story Week Results screen when the playlist ends.
+fn complete_song_or_advance_story(
+    state: &mut RuntimeState,
+    mut audio: Option<&mut AudioEngine>,
+    now: Instant,
+) -> bool {
+    if state.return_target == ReturnTarget::StoryMenu
+        && state.story_playlist_idx + 1 < state.story_playlist.len()
+    {
+        state.story_playlist_idx += 1;
+        let next_song = state.story_playlist[state.story_playlist_idx].clone();
+        let diff = state.story_difficulty.clone();
+        let prev_var = state
+            .gameplay
+            .as_ref()
+            .and_then(|g| g.loaded_chart.variation.clone())
+            .unwrap_or_else(|| DEFAULT_VARIATION.to_owned());
+        let eff_var = state
+            .assets
+            .resolve_song_variation(&next_song, &diff, Some(&prev_var));
+        purge_inactive_resources(state, audio.as_deref_mut(), ActiveScreen::Title);
+        state.screen = ActiveScreen::Gameplay;
+        let loaded = load_song_chart(&state.assets, &next_song, &diff, eff_var.as_deref());
+        state.gameplay = Some(build_active_gameplay(
+            &state.assets,
+            &mut state.gpu,
+            audio,
+            loaded,
+            GameplayLaunchOpts {
+                downscroll: state.downscroll_pref,
+                botplay: state.botplay_pref,
+                is_story_mode: true,
+                naughtyness: state.save.options.naughtyness,
+                master_volume: state.sound_tray.effective_volume(),
+                keybinds: KeyBinds::from_names(&state.save.options.keybinds),
+            },
+            &mut state.menu_sfx,
+            now,
+        ));
+        return true;
+    }
+
+    let Some(gp) = state.gameplay.as_mut() else {
+        return false;
+    };
+    if state.return_target == ReturnTarget::StoryMenu {
+        let valid_score =
+            !gp.scene.session.config.practice_mode && !gp.scene.session.config.is_botplay;
+        let mut is_new_level = false;
+        if valid_score && !state.story_level_id.is_empty() {
+            let key = SaveData::level_key(&state.story_level_id, &state.story_difficulty);
+            let prev = state.save.scores.levels.get(&key).map(|s| s.score);
+            is_new_level = prev.is_none_or(|p| state.story_total_score > p);
+            state.save.record_level_score(
+                &state.story_level_id,
+                &state.story_difficulty,
+                state.story_total_score,
+            );
+        }
+        let title = if state.story_level_title.is_empty() {
+            state.story_level_id.clone()
+        } else {
+            state.story_level_title.clone()
+        };
+        gp.scene.results.show(
+            &title,
+            &state.story_difficulty,
+            state.story_total_score,
+            state.story_tallies,
+            is_new_level,
+        );
+    }
+    activate_results_screen(
+        &state.assets,
+        &mut state.gpu,
+        &state.save,
+        gp,
+        audio.as_deref_mut(),
+    );
+    false
+}
+
 fn wall_clock_ms(start_time: Instant, paused_duration: Duration, now: Instant) -> f64 {
     now.saturating_duration_since(start_time)
         .saturating_sub(paused_duration)
@@ -800,7 +952,11 @@ fn activate_results_screen(
         .variation
         .as_deref()
         .is_some_and(|v| v.eq_ignore_ascii_case("pico"))
-        || save.playable_character.eq_ignore_ascii_case("pico");
+        || gp.scene
+            .bf
+            .as_ref()
+            .is_some_and(|b| b.id.to_ascii_lowercase().starts_with("pico"))
+        || save.playable_character.to_ascii_lowercase().starts_with("pico");
     gp.scene.results.load_visuals(assets, gpu, is_pico);
     if let Some(engine) = audio {
         let _ = engine.pause();

@@ -131,8 +131,14 @@ pub enum AudioCommand {
         slot: usize,
         gain: f32,
     },
+    StopAllSfx,
     StartBgLoop(Box<DecodedAudio>),
     StopBgLoop,
+    SetBgLoopPaused(bool),
+    SetBgLoopGain(f32),
+    StartPauseLoop(Box<DecodedAudio>),
+    StopPauseLoop,
+    SetPauseLoopGain(f32),
 }
 
 /// Replaced buffers returned to the main thread so the audio callback never deallocates.
@@ -173,6 +179,11 @@ pub struct MixerState {
     sfx_voices: [SfxVoice; MAX_SFX_VOICES],
     bg_loop: Option<Box<DecodedAudio>>,
     bg_loop_cursor: usize,
+    bg_loop_paused: bool,
+    bg_loop_gain: f32,
+    pause_loop: Option<Box<DecodedAudio>>,
+    pause_loop_cursor: usize,
+    pause_loop_gain: f32,
 }
 
 impl MixerState {
@@ -201,6 +212,11 @@ impl MixerState {
             sfx_voices: [SfxVoice::default(); MAX_SFX_VOICES],
             bg_loop: None,
             bg_loop_cursor: 0,
+            bg_loop_paused: false,
+            bg_loop_gain: 0.75,
+            pause_loop: None,
+            pause_loop_cursor: 0,
+            pause_loop_gain: 0.0,
         }
     }
 
@@ -301,17 +317,51 @@ impl MixerState {
                 AudioCommand::PlaySfx { slot, gain } => {
                     self.trigger_sfx(slot, gain);
                 }
+                AudioCommand::StopAllSfx => {
+                    for voice in &mut self.sfx_voices {
+                        voice.active = false;
+                    }
+                }
                 AudioCommand::StartBgLoop(audio) => {
                     self.bg_loop_cursor = 0;
+                    self.bg_loop_paused = false;
+                    self.bg_loop_gain = 0.75;
                     if let Some(old) = self.bg_loop.replace(audio) {
                         let _ = self.retired_tx.push(RetiredResource::Audio(old));
                     }
                 }
                 AudioCommand::StopBgLoop => {
                     self.bg_loop_cursor = 0;
+                    self.bg_loop_paused = false;
                     if let Some(old) = self.bg_loop.take() {
                         let _ = self.retired_tx.push(RetiredResource::Audio(old));
                     }
+                }
+                AudioCommand::SetBgLoopPaused(paused) => {
+                    self.bg_loop_paused = paused;
+                }
+                AudioCommand::SetBgLoopGain(gain) => {
+                    self.bg_loop_gain = gain.clamp(0.0, 1.5);
+                }
+                AudioCommand::StartPauseLoop(audio) => {
+                    self.pause_loop_cursor = if audio.frames > 2 {
+                        (audio.frames / 3) % audio.frames
+                    } else {
+                        0
+                    };
+                    self.pause_loop_gain = 0.0;
+                    if let Some(old) = self.pause_loop.replace(audio) {
+                        let _ = self.retired_tx.push(RetiredResource::Audio(old));
+                    }
+                }
+                AudioCommand::StopPauseLoop => {
+                    self.pause_loop_cursor = 0;
+                    if let Some(old) = self.pause_loop.take() {
+                        let _ = self.retired_tx.push(RetiredResource::Audio(old));
+                    }
+                }
+                AudioCommand::SetPauseLoopGain(gain) => {
+                    self.pause_loop_gain = gain.clamp(0.0, 1.5);
                 }
             }
         }
@@ -374,11 +424,18 @@ impl MixerState {
                         self.is_playing = false;
                     }
                 }
+            } else if let Some(pause) = &self.pause_loop {
+                if pause.frames > 0 {
+                    let [l, r] = pause.sample_frame(self.pause_loop_cursor);
+                    left += l * self.pause_loop_gain;
+                    right += r * self.pause_loop_gain;
+                    self.pause_loop_cursor = (self.pause_loop_cursor + 1) % pause.frames;
+                }
             } else if let Some(bg) = &self.bg_loop {
-                if bg.frames > 0 {
+                if !self.bg_loop_paused && bg.frames > 0 {
                     let [l, r] = bg.sample_frame(self.bg_loop_cursor);
-                    left += l * 0.55;
-                    right += r * 0.55;
+                    left += l * self.bg_loop_gain;
+                    right += r * self.bg_loop_gain;
                     self.bg_loop_cursor = (self.bg_loop_cursor + 1) % bg.frames;
                 }
             }
@@ -602,7 +659,12 @@ impl AudioEngine {
         self.send(AudioCommand::PlaySfx { slot, gain })
     }
 
-    /// Starts an independent looping background audio track (e.g. pause music).
+    /// Immediately silences any currently active SFX voices.
+    pub fn stop_all_sfx(&mut self) -> Result<(), AudioError> {
+        self.send(AudioCommand::StopAllSfx)
+    }
+
+    /// Starts an independent looping background audio track (e.g. death or dialogue music).
     pub fn start_bg_loop(&mut self, audio: DecodedAudio) -> Result<(), AudioError> {
         self.send(AudioCommand::StartBgLoop(Box::new(audio)))
     }
@@ -610,6 +672,31 @@ impl AudioEngine {
     /// Stops any active background loop audio track.
     pub fn stop_bg_loop(&mut self) -> Result<(), AudioError> {
         self.send(AudioCommand::StopBgLoop)
+    }
+
+    /// Pauses or resumes the active background loop without losing cursor position.
+    pub fn set_bg_loop_paused(&mut self, paused: bool) -> Result<(), AudioError> {
+        self.send(AudioCommand::SetBgLoopPaused(paused))
+    }
+
+    /// Adjusts background loop gain (e.g. ducking during death quotes).
+    pub fn set_bg_loop_gain(&mut self, gain: f32) -> Result<(), AudioError> {
+        self.send(AudioCommand::SetBgLoopGain(gain))
+    }
+
+    /// Starts pause menu background music cleanly over paused gameplay or dialogue.
+    pub fn start_pause_loop(&mut self, audio: DecodedAudio) -> Result<(), AudioError> {
+        self.send(AudioCommand::StartPauseLoop(Box::new(audio)))
+    }
+
+    /// Stops pause menu background music cleanly.
+    pub fn stop_pause_loop(&mut self) -> Result<(), AudioError> {
+        self.send(AudioCommand::StopPauseLoop)
+    }
+
+    /// Sets pause menu music gain (used for the `0.0 -> 0.75` 5-second fade-in).
+    pub fn set_pause_loop_gain(&mut self, gain: f32) -> Result<(), AudioError> {
+        self.send(AudioCommand::SetPauseLoopGain(gain))
     }
 }
 

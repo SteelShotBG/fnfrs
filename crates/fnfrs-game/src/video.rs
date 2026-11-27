@@ -104,6 +104,8 @@ mod win32_vlc {
     type FnMpRelease = unsafe extern "C" fn(*mut c_void);
     type FnMpPlay = unsafe extern "C" fn(*mut c_void) -> c_int;
     type FnMpStop = unsafe extern "C" fn(*mut c_void);
+    type FnMpSetPause = unsafe extern "C" fn(*mut c_void, c_int);
+    type FnMpSetTime = unsafe extern "C" fn(*mut c_void, i64);
     type FnMpGetState = unsafe extern "C" fn(*mut c_void) -> c_int;
     type FnMpSetVol = unsafe extern "C" fn(*mut c_void, c_int) -> c_int;
     type FnVideoSetCallbacks = unsafe extern "C" fn(
@@ -214,6 +216,9 @@ mod win32_vlc {
         mp: *mut c_void,
         fn_mp_release: FnMpRelease,
         fn_mp_stop: FnMpStop,
+        fn_mp_play: FnMpPlay,
+        fn_mp_set_pause: Option<FnMpSetPause>,
+        fn_mp_set_time: Option<FnMpSetTime>,
         fn_mp_get_state: FnMpGetState,
         fn_mp_set_vol: Option<FnMpSetVol>,
         fn_vlc_release: FnLibVlcRelease,
@@ -292,6 +297,10 @@ mod win32_vlc {
                 load_proc(loaded_dll, b"libvlc_media_player_release\0")?;
             let fn_mp_play: FnMpPlay = load_proc(loaded_dll, b"libvlc_media_player_play\0")?;
             let fn_mp_stop: FnMpStop = load_proc(loaded_dll, b"libvlc_media_player_stop\0")?;
+            let fn_mp_set_pause: Option<FnMpSetPause> =
+                load_proc(loaded_dll, b"libvlc_media_player_set_pause\0");
+            let fn_mp_set_time: Option<FnMpSetTime> =
+                load_proc(loaded_dll, b"libvlc_media_player_set_time\0");
             let fn_mp_get_state: FnMpGetState =
                 load_proc(loaded_dll, b"libvlc_media_player_get_state\0")?;
             let fn_mp_set_vol: Option<FnMpSetVol> =
@@ -386,6 +395,9 @@ mod win32_vlc {
                 mp,
                 fn_mp_release,
                 fn_mp_stop,
+                fn_mp_play,
+                fn_mp_set_pause,
+                fn_mp_set_time,
                 fn_mp_get_state,
                 fn_mp_set_vol,
                 fn_vlc_release,
@@ -397,6 +409,28 @@ mod win32_vlc {
             if let Some(sv) = self.fn_mp_set_vol {
                 unsafe {
                     (sv)(self.mp, (volume.clamp(0.0, 1.0) * 100.0).round() as c_int);
+                }
+            }
+        }
+
+        pub fn set_paused(&self, paused: bool) {
+            if let Some(sp) = self.fn_mp_set_pause {
+                unsafe {
+                    (sp)(self.mp, if paused { 1 } else { 0 });
+                }
+            }
+        }
+
+        pub fn restart(&self) {
+            unsafe {
+                if let Some(st) = self.fn_mp_set_time {
+                    (st)(self.mp, 0);
+                } else {
+                    (self.fn_mp_stop)(self.mp);
+                }
+                (self.fn_mp_play)(self.mp);
+                if let Some(sp) = self.fn_mp_set_pause {
+                    (sp)(self.mp, 0);
                 }
             }
         }
@@ -431,6 +465,7 @@ pub struct VideoCutsceneState {
     elapsed_s: f32,
     skip_prompt_alpha: f32,
     skip_armed: bool,
+    pub is_paused: bool,
     sub_buf: StackTextBuffer<160>,
     pub is_active: bool,
 }
@@ -483,9 +518,38 @@ impl VideoCutsceneState {
                 elapsed_s: 0.0,
                 skip_prompt_alpha: 0.0,
                 skip_armed: false,
+                is_paused: false,
                 sub_buf: StackTextBuffer::new(),
                 is_active: true,
             })
+        }
+    }
+
+    pub fn set_paused(&mut self, paused: bool) {
+        self.is_paused = paused;
+        #[cfg(target_os = "windows")]
+        if let Some(vlc) = &self.vlc {
+            vlc.set_paused(paused);
+        }
+    }
+
+    pub fn restart(&mut self) {
+        self.elapsed_s = 0.0;
+        self.is_paused = false;
+        self.skip_armed = false;
+        self.skip_prompt_alpha = 0.0;
+        #[cfg(target_os = "windows")]
+        if let Some(vlc) = &self.vlc {
+            vlc.restart();
+        }
+    }
+
+    pub fn finish(&mut self) {
+        self.is_active = false;
+        self.is_paused = false;
+        #[cfg(target_os = "windows")]
+        {
+            self.vlc = None;
         }
     }
 
@@ -494,10 +558,10 @@ impl VideoCutsceneState {
         elapsed_s: f32,
         gpu: &GpuContext,
         volume: f32,
-        accept_pressed: bool,
-        back_pressed: bool,
+        advance_pressed: bool,
+        _back_pressed: bool,
     ) -> VideoCutsceneAction {
-        if !self.is_active {
+        if !self.is_active || self.is_paused {
             return VideoCutsceneAction::None;
         }
 
@@ -511,8 +575,7 @@ impl VideoCutsceneState {
                 let _ = gpu.update_texture_rgba8(self.video_tex, &self.frame_scratch);
             }
             if vlc.is_finished() && self.elapsed_s > 0.35 {
-                self.is_active = false;
-                self.vlc = None;
+                self.finish();
                 return VideoCutsceneAction::Finished;
             }
         }
@@ -521,31 +584,16 @@ impl VideoCutsceneState {
             let _ = (gpu, volume);
         }
 
-        if back_pressed {
-            self.is_active = false;
-            #[cfg(target_os = "windows")]
-            {
-                self.vlc = None;
-            }
-            return VideoCutsceneAction::Finished;
-        }
-
-        if accept_pressed {
+        if advance_pressed {
             if self.skip_armed {
-                self.is_active = false;
-                #[cfg(target_os = "windows")]
-                {
-                    self.vlc = None;
-                }
+                self.finish();
                 return VideoCutsceneAction::Finished;
             }
             self.skip_armed = true;
         }
 
         if self.skip_armed {
-            self.skip_prompt_alpha = (self.skip_prompt_alpha + dt * 2.5).min(1.0);
-        } else if self.elapsed_s > 1.5 {
-            self.skip_prompt_alpha = (self.skip_prompt_alpha + dt * 0.8).min(0.45);
+            self.skip_prompt_alpha = (self.skip_prompt_alpha + dt * 2.0).min(1.0);
         }
 
         VideoCutsceneAction::None
@@ -603,12 +651,12 @@ impl VideoCutsceneState {
             font.draw_bytes_outlined(
                 batcher,
                 font_tex,
-                b"SKIP [ ENTER / SPACE ]",
-                [VIRTUAL_WIDTH - 36.0, VIRTUAL_HEIGHT - 44.0],
+                b"Skip [ ENTER ]",
+                [936.0, 618.0],
                 &TextStyle {
-                    scale: if font.line_height() <= 10.0 { 2.0 } else { 1.1 },
+                    scale: if font.line_height() <= 10.0 { 3.5 } else { 2.2 },
                     color: [1.0, 1.0, 1.0, self.skip_prompt_alpha],
-                    align: TextAlign::Right,
+                    align: TextAlign::Left,
                     ..Default::default()
                 },
                 [0.0, 0.0, 0.0, self.skip_prompt_alpha],

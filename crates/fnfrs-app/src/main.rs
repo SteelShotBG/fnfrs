@@ -19,7 +19,7 @@ use fnfrs_game::menus::{
     MenuInputState, OptionsScreenState, StoryMenuScreenState, TitleScreenState,
 };
 use fnfrs_game::sound_tray::SoundTray;
-use fnfrs_game::{GameOverPhase, KeyBinds, PauseMenuInput};
+use fnfrs_game::{GameOverPhase, KeyBinds, PauseMenuInput, PauseMenuMode};
 use fnfrs_render::{
     BitmapFont, GpuContext, GpuError, MeshBatcher, RainPostPass, SpriteBatcher, TextureHandle,
 };
@@ -93,8 +93,12 @@ pub(crate) struct RuntimeState {
     pub story_playlist: Vec<String>,
     pub story_difficulty: String,
     pub story_level_id: String,
+    pub story_level_title: String,
+    pub story_menu_level_id: Option<String>,
+    pub story_menu_difficulty: String,
     pub story_playlist_idx: usize,
     pub story_total_score: i64,
+    pub story_tallies: fnfrs_core::scoring::ScoreTallies,
 
     pub gameplay: Option<ActiveGameplay>,
 
@@ -301,8 +305,12 @@ impl ApplicationHandler for App {
             story_playlist: Vec::new(),
             story_difficulty: DEFAULT_DIFFICULTY.to_owned(),
             story_level_id: String::new(),
+            story_level_title: String::new(),
+            story_menu_level_id: None,
+            story_menu_difficulty: DEFAULT_DIFFICULTY.to_owned(),
             story_playlist_idx: 0,
             story_total_score: 0,
+            story_tallies: fnfrs_core::scoring::ScoreTallies::default(),
             gameplay,
             minimized: false,
             occluded: false,
@@ -433,13 +441,63 @@ impl ApplicationHandler for App {
                     return;
                 };
 
+                match code {
+                    KeyCode::ArrowUp | KeyCode::KeyW => gp.pause_up_held = pressed,
+                    KeyCode::ArrowDown | KeyCode::KeyS => gp.pause_down_held = pressed,
+                    KeyCode::ShiftLeft | KeyCode::ShiftRight => gp.pause_shift_held = pressed,
+                    _ => {}
+                }
+
+                if gp.scene.pause_menu.is_open {
+                    if pressed && !event.repeat {
+                        let mapped = if code == KeyCode::KeyP {
+                            PauseMenuInput {
+                                back_pressed: true,
+                                ..Default::default()
+                            }
+                        } else {
+                            PauseMenuInput::from_key_code(code)
+                        };
+                        gp.pending_pause_input.up_pressed |= mapped.up_pressed;
+                        gp.pending_pause_input.down_pressed |= mapped.down_pressed;
+                        gp.pending_pause_input.accept_pressed |= mapped.accept_pressed;
+                        gp.pending_pause_input.back_pressed |= mapped.back_pressed;
+                    }
+                    return;
+                }
+
                 if gp.cutscene.is_active() {
                     if pressed && !event.repeat {
                         match code {
-                            KeyCode::Enter | KeyCode::Space => {
+                            KeyCode::Enter | KeyCode::Space | KeyCode::KeyZ => {
                                 gp.pending_overlay_accept = true;
                             }
-                            KeyCode::Escape | KeyCode::Backspace => {
+                            KeyCode::Escape | KeyCode::KeyP => {
+                                if let Some(mode) = gp.cutscene.pause_mode() {
+                                    gp.cutscene.set_paused(true);
+                                    gp.scene.pause_menu.open_with_mode(
+                                        mode,
+                                        gp.scene.session.config.practice_mode,
+                                        gp.scene.game_over.death_count,
+                                        state.save.options.audio_offset_ms,
+                                    );
+                                    gp.pause_started_at = Some(now);
+                                    gp.inputs.clear();
+                                    if let Some(engine) = self.audio.as_mut() {
+                                        let _ = engine.pause();
+                                        let _ = engine.set_bg_loop_paused(true);
+                                        let pause_path = gp
+                                            .level_assets
+                                            .music(gp.scene.game_over.pause_music_key.as_str());
+                                        if let Ok(decoded) =
+                                            decode_file(&pause_path, engine.sample_rate())
+                                        {
+                                            let _ = engine.start_pause_loop(decoded);
+                                        }
+                                    }
+                                }
+                            }
+                            KeyCode::Backspace => {
                                 gp.pending_overlay_back = true;
                             }
                             _ => {}
@@ -478,44 +536,27 @@ impl ApplicationHandler for App {
                     return;
                 }
 
-                if gp.scene.pause_menu.is_open {
-                    if pressed && !event.repeat {
-                        let mapped = if code == KeyCode::KeyP {
-                            PauseMenuInput {
-                                back_pressed: true,
-                                ..Default::default()
-                            }
-                        } else {
-                            PauseMenuInput::from_key_code(code)
-                        };
-                        gp.pending_pause_input.up_pressed |= mapped.up_pressed;
-                        gp.pending_pause_input.down_pressed |= mapped.down_pressed;
-                        gp.pending_pause_input.accept_pressed |= mapped.accept_pressed;
-                        gp.pending_pause_input.back_pressed |= mapped.back_pressed;
-                    }
-                    return;
-                }
-
                 if pressed && !event.repeat {
                     match code {
                         KeyCode::Escape | KeyCode::KeyP => {
-                            gp.scene.pause_menu.open(
-                                gp.scene.session.config.is_botplay,
-                                gp.scene.session.config.is_downscroll,
+                            gp.scene.pause_menu.open_with_mode(
+                                PauseMenuMode::Main,
+                                gp.scene.session.config.practice_mode,
                                 gp.scene.game_over.death_count,
+                                state.save.options.audio_offset_ms,
                             );
-                            gp.scene.pause_menu.is_practice =
-                                gp.scene.session.config.practice_mode;
                             gp.scene.session.is_paused = true;
                             gp.scene.countdown.set_paused(true);
                             gp.pause_started_at = Some(now);
                             gp.inputs.clear();
                             if let Some(engine) = self.audio.as_mut() {
                                 let _ = engine.pause();
-                                let pause_path = state.assets.music("breakfast");
+                                let pause_path = gp
+                                    .level_assets
+                                    .music(gp.scene.game_over.pause_music_key.as_str());
                                 if let Ok(decoded) = decode_file(&pause_path, engine.sample_rate())
                                 {
-                                    let _ = engine.start_bg_loop(decoded);
+                                    let _ = engine.start_pause_loop(decoded);
                                 }
                             }
                             return;

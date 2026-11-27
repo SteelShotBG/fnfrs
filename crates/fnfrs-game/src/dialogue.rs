@@ -219,6 +219,21 @@ impl DialogueState {
         }
     }
 
+    /// Restarts the conversation from entry 0 (`Conversation.resetConversation`).
+    pub fn restart(&mut self) {
+        self.finishing_outro = false;
+        self.outro_timer_s = 0.0;
+        self.elapsed_s = 0.0;
+        self.is_active = true;
+        self.start_line(0);
+    }
+
+    /// Immediately finishes/skips the conversation (`Conversation.skipConversation`).
+    pub fn skip(&mut self) {
+        self.finishing_outro = true;
+        self.outro_timer_s = 0.0;
+    }
+
     /// Advances typewriter reveal, sprites, and confirm/skip input with zero heap allocations.
     pub fn update(
         &mut self,
@@ -429,7 +444,7 @@ impl DialogueState {
         font.draw_bytes_outlined(
             batcher,
             font_tex,
-            b"SPACE / ENTER: NEXT   ESC: SKIP",
+            b"ENTER: Next   |   ESC / P: Pause",
             [VIRTUAL_WIDTH - 28.0, VIRTUAL_HEIGHT - 32.0],
             &TextStyle {
                 scale: if font.line_height() <= 10.0 { 1.5 } else { 0.85 },

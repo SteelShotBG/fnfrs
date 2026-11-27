@@ -2,7 +2,8 @@ use std::fs;
 use std::time::Instant;
 
 use fnfrs_audio::AudioEngine;
-use fnfrs_core::constants::DEFAULT_DIFFICULTY;
+use fnfrs_core::constants::{DEFAULT_DIFFICULTY, DEFAULT_VARIATION};
+use fnfrs_core::scoring::ScoreTallies;
 use fnfrs_core::schema::song::SongMetadata;
 use fnfrs_game::debug_display::DebugSnapshot;
 use fnfrs_game::menus::{
@@ -101,8 +102,13 @@ pub(crate) fn enter_menu_screen(
                 ));
             }
             ActiveScreen::StoryMenu => {
-                state.story_menu_screen =
-                    Some(StoryMenuScreenState::load(&state.assets, &mut state.gpu));
+                state.story_menu_screen = Some(StoryMenuScreenState::load(
+                    &state.assets,
+                    &mut state.gpu,
+                    &state.save,
+                    state.story_menu_level_id.as_deref(),
+                    &state.story_menu_difficulty,
+                ));
             }
             ActiveScreen::Freeplay => {
                 let mut f = FreeplayScreenState::load(&state.assets, &mut state.gpu);
@@ -142,7 +148,7 @@ pub(crate) fn enter_menu_screen(
             }
             ActiveScreen::StoryMenu => {
                 if let Some(s) = &mut state.story_menu_screen {
-                    s.reset_for_enter();
+                    s.reset_for_enter(&state.save);
                 }
             }
             ActiveScreen::Freeplay => {
@@ -237,6 +243,10 @@ pub(crate) fn update_and_draw_menus(
                 .as_mut()
                 .map_or(MenuCommand::None, |s| s.update(elapsed_s, input));
             if let Some(s) = &mut state.story_menu_screen {
+                if let Some(id) = s.selected_week_id() {
+                    state.story_menu_level_id = Some(id.to_owned());
+                }
+                state.story_menu_difficulty = s.selected_difficulty().to_owned();
                 s.sync_active_week(&state.assets, &mut state.gpu);
             }
             cmd
@@ -523,7 +533,9 @@ pub(crate) fn handle_menu_command(
             state.screen = ActiveScreen::Gameplay;
             state.story_playlist.clear();
             state.story_level_id.clear();
+            state.story_level_title.clear();
             state.story_total_score = 0;
+            state.story_tallies = ScoreTallies::default();
             let loaded = load_song_chart(
                 &state.assets,
                 &song_id,
@@ -547,22 +559,29 @@ pub(crate) fn handle_menu_command(
                 now,
             ));
         }
-        MenuCommand::StartStoryWeek { songs, difficulty } => {
+        MenuCommand::StartStoryWeek {
+            level_id,
+            level_title,
+            songs,
+            difficulty,
+        } => {
             if let Some(first_song) = songs.first().cloned() {
-                state.story_level_id = state
-                    .story_menu_screen
-                    .as_ref()
-                    .and_then(StoryMenuScreenState::selected_week_id)
-                    .unwrap_or("")
-                    .to_owned();
+                state.story_level_id = level_id;
+                state.story_level_title = level_title;
                 state.story_total_score = 0;
+                state.story_tallies = ScoreTallies::default();
                 purge_inactive_resources(state, audio.as_deref_mut(), ActiveScreen::Gameplay);
                 state.return_target = ReturnTarget::StoryMenu;
                 state.screen = ActiveScreen::Gameplay;
                 state.story_playlist = songs;
                 state.story_difficulty = difficulty.clone();
                 state.story_playlist_idx = 0;
-                let loaded = load_song_chart(&state.assets, &first_song, &difficulty, None);
+                let eff_var =
+                    state
+                        .assets
+                        .resolve_song_variation(&first_song, &difficulty, Some(DEFAULT_VARIATION));
+                let loaded =
+                    load_song_chart(&state.assets, &first_song, &difficulty, eff_var.as_deref());
                 state.gameplay = Some(build_active_gameplay(
                     &state.assets,
                     &mut state.gpu,

@@ -130,6 +130,7 @@ pub struct PlayScene {
     pub results: ResultsSummaryState,
     pub scene_config: PlaySceneConfig,
     pub scripts: NativeScriptHost,
+    pub hide_hud_for_cutscene: bool,
 
     base_scroll_speed: f64,
     health_bar_size: [f32; 2],
@@ -170,7 +171,9 @@ impl PlayScene {
         let mut game_over = GameOverState::new();
         game_over.death_count = scene_config.death_count;
         let bf_is_pixel = bf.as_ref().is_some_and(|c| c.is_pixel);
-        game_over.set_suffix(if bf_is_pixel { "-pixel" } else { "" }, bf_is_pixel);
+        let bf_id = bf.as_ref().map_or("bf", |c| c.id.as_str());
+        let dad_id = dad.as_ref().map_or("dad", |c| c.id.as_str());
+        game_over.set_character_profile(bf_id, dad_id, bf_is_pixel);
 
         let beat_ms = session.conductor.beat_length_ms();
         let mut countdown = CountdownController::new(beat_ms);
@@ -205,6 +208,7 @@ impl PlayScene {
             results: ResultsSummaryState::new(),
             scene_config,
             scripts: NativeScriptHost::empty(),
+            hide_hud_for_cutscene: false,
             base_scroll_speed,
             health_bar_size: [601.0, 19.0],
             player_scroll_tween: ScrollSpeedTween::default(),
@@ -354,16 +358,29 @@ impl PlayScene {
             if let Some(bf) = &mut self.bf {
                 let focus = bf.get_death_camera_focus_point();
                 self.camera_rig.cam_game.set_target(focus[0], focus[1]);
+                let confirm_phase = matches!(
+                    self.game_over.phase,
+                    GameOverPhase::ConfirmRetry | GameOverPhase::Exiting
+                );
                 let target_anim = match self.game_over.phase {
                     GameOverPhase::FirstDeath => "firstDeath",
                     GameOverPhase::DeathLoop => "deathLoop",
-                    GameOverPhase::ConfirmRetry | GameOverPhase::Exiting => "deathConfirm",
+                    GameOverPhase::ConfirmRetry | GameOverPhase::Exiting => {
+                        if bf.current_animation() == "deathConfirm-loop"
+                            || (bf.current_animation() == "deathConfirm"
+                                && bf.is_animation_finished()
+                                && bf.has_animation("deathConfirm-loop"))
+                        {
+                            "deathConfirm-loop"
+                        } else {
+                            "deathConfirm"
+                        }
+                    }
                     GameOverPhase::Inactive => "firstDeath",
                 };
-                if matches!(
-                    self.game_over.phase,
-                    GameOverPhase::ConfirmRetry | GameOverPhase::Exiting
-                ) && bf.current_animation() != "deathConfirm"
+                if confirm_phase
+                    && bf.current_animation() != "deathConfirm"
+                    && bf.current_animation() != "deathConfirm-loop"
                 {
                     let stage_zoom = self.stage.as_ref().map_or(DEFAULT_STAGE_ZOOM, |s| s.camera_zoom);
                     self.camera_rig.cam_game.tween_zoom(stage_zoom, 0.5, FlxEase::QuadOut);
@@ -743,19 +760,21 @@ impl PlayScene {
 
         self.draw_world_layer(stage_sprites, cam_pos, cam_zoom, hud_zoom);
 
-        self.session.draw(
-            bg_sprites,
-            fg_sprites,
-            mesh_batcher,
-            style,
-            note_assets,
-            font,
-            font_tex,
-        );
-        self.icon_p2.draw(fg_sprites, style.white_texture);
-        self.icon_p1.draw(fg_sprites, style.white_texture);
-        self.countdown
-            .draw(fg_sprites, self.countdown_assets.as_ref());
+        if !self.hide_hud_for_cutscene {
+            self.session.draw(
+                bg_sprites,
+                fg_sprites,
+                mesh_batcher,
+                style,
+                note_assets,
+                font,
+                font_tex,
+            );
+            self.icon_p2.draw(fg_sprites, style.white_texture);
+            self.icon_p1.draw(fg_sprites, style.white_texture);
+            self.countdown
+                .draw(fg_sprites, self.countdown_assets.as_ref());
+        }
 
         if let Some(flash) = self.camera_rig.cam_game.flash_overlay() {
             overlay_sprites.push(
@@ -775,9 +794,18 @@ impl PlayScene {
                     .with_color(flash),
             );
         }
+    }
 
+    /// Draws the active pause substate overlay after cutscene overlays so pause sits on top.
+    pub fn draw_pause_overlay(
+        &self,
+        overlay_sprites: &mut SpriteBatcher,
+        white_tex: TextureHandle,
+        font: &BitmapFont,
+        font_tex: TextureHandle,
+    ) {
         self.pause_menu
-            .draw(overlay_sprites, style.white_texture, font, font_tex);
+            .draw(overlay_sprites, white_tex, font, font_tex);
     }
 
     fn draw_world_layer(

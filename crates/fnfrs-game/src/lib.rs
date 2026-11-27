@@ -32,11 +32,11 @@ pub use events::{
     ScrollSpeedTarget, SongEventQueue, ZoomMode,
 };
 pub use hud::{
-    compute_accuracy_percent, GameOverAction, GameOverAudioCue, GameOverEvents, GameOverPhase,
-    GameOverState, HealthBarLayout, HealthIcon, HealthIconSheet, HealthIconSparrowFrames,
-    HealthIconState, PauseMenuAction, PauseMenuInput, PauseMenuMode, PauseMenuOption,
-    PauseMenuState, ResultsAction, ResultsRank, ResultsSummaryState, HEALTH_ICON_OVERLAP,
-    HEALTH_LOSING_RATIO, HEALTH_WINNING_RATIO,
+    compute_accuracy_percent, DeathQuoteKind, GameOverAction, GameOverAudioCue, GameOverEvents,
+    GameOverPhase, GameOverState, HealthBarLayout, HealthIcon, HealthIconSheet,
+    HealthIconSparrowFrames, HealthIconState, PauseMenuAction, PauseMenuInput, PauseMenuMode,
+    PauseMenuOption, PauseMenuState, ResultsAction, ResultsRank, ResultsSummaryState,
+    HEALTH_ICON_OVERLAP, HEALTH_LOSING_RATIO, HEALTH_WINNING_RATIO,
 };
 pub use input::{
     compute_note_diff_ms, HeldKeys, InputQueue, InputRing, KeyBinds, NoteDirection,

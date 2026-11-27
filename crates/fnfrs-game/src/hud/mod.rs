@@ -12,7 +12,8 @@ pub mod pause_menu;
 pub mod results;
 
 pub use game_over::{
-    GameOverAction, GameOverAudioCue, GameOverEvents, GameOverPhase, GameOverState,
+    DeathQuoteKind, GameOverAction, GameOverAudioCue, GameOverEvents, GameOverPhase,
+    GameOverState,
 };
 pub use health_icon::{
     HealthBarLayout, HealthIcon, HealthIconSheet, HealthIconSparrowFrames, HealthIconState,
@@ -92,9 +93,9 @@ mod tests {
     #[test]
     fn pause_menu_navigation_wraps_around_and_guards_first_frame() {
         let mut menu = PauseMenuState::new("Bopeebo", "normal");
-        menu.open(false, false, 1);
+        menu.open_with_mode(PauseMenuMode::Main, false, 1, 0.0);
         let count = menu.item_count();
-        assert_eq!(count, 7);
+        assert_eq!(count, 5);
         assert_eq!(menu.selected, 0);
 
         // Wrap upward from 0 -> last item
@@ -116,9 +117,12 @@ mod tests {
         assert_eq!(first, PauseMenuAction::None);
         assert!(menu.is_open);
 
-        // Next frame toggles botplay
-        menu.move_selection(4);
-        assert_eq!(menu.selected_main_option(), Some(PauseMenuOption::ToggleBotplay));
+        // Selecting "Enable Practice Mode" switches flag & filters list to 4 entries
+        menu.move_selection(3);
+        assert_eq!(
+            menu.selected_main_option(),
+            Some(PauseMenuOption::EnablePracticeMode)
+        );
         let act = menu.update(
             0.016,
             PauseMenuInput {
@@ -126,8 +130,18 @@ mod tests {
                 ..Default::default()
             },
         );
-        assert_eq!(act, PauseMenuAction::ToggleBotplay);
-        assert!(menu.is_botplay);
+        assert_eq!(act, PauseMenuAction::TogglePractice);
+        assert!(menu.is_practice);
+        assert_eq!(menu.item_count(), 4);
+
+        // Cutscene pause mode exposes Skip Cutscene / Restart Cutscene
+        menu.open_with_mode(PauseMenuMode::Cutscene, false, 0, 0.0);
+        assert_eq!(menu.item_count(), 4);
+        menu.move_selection(1);
+        assert_eq!(
+            menu.selected_main_option(),
+            Some(PauseMenuOption::SkipCutscene)
+        );
     }
 
     #[test]
