@@ -2465,7 +2465,17 @@ fn preload_event_icons(
     bf_is_pixel: bool,
     dad_is_pixel: bool,
 ) {
-    let mut to_load = Vec::new();
+    struct PreloadIconSpec {
+        char_id: i32,
+        icon_id: String,
+        scale: Option<f32>,
+        flip_x: Option<bool>,
+        is_pixel: Option<bool>,
+        should_bop: Option<bool>,
+        offsets: Option<[f32; 2]>,
+    }
+
+    let mut to_load: Vec<PreloadIconSpec> = Vec::new();
     for ev in scene.event_queue.events() {
         if let GameEventAction::SetHealthIcon {
             char_id,
@@ -2478,40 +2488,42 @@ fn preload_event_icons(
         } = &ev.action
         {
             if (*char_id == 0 || *char_id == 1)
-                && !to_load.iter().any(|(c, id, ..)| *c == *char_id && id.eq_ignore_ascii_case(icon_id))
+                && !to_load
+                    .iter()
+                    .any(|spec| spec.char_id == *char_id && spec.icon_id.eq_ignore_ascii_case(icon_id))
             {
-                to_load.push((
-                    *char_id,
-                    icon_id.clone(),
-                    *scale,
-                    *flip_x,
-                    *is_pixel,
-                    *should_bop,
-                    *offsets,
-                ));
+                to_load.push(PreloadIconSpec {
+                    char_id: *char_id,
+                    icon_id: icon_id.clone(),
+                    scale: *scale,
+                    flip_x: *flip_x,
+                    is_pixel: *is_pixel,
+                    should_bop: *should_bop,
+                    offsets: *offsets,
+                });
             }
         }
     }
-    for (char_id, icon_id, scale, flip_x, is_pixel, should_bop, offsets) in to_load {
-        let is_player = char_id == 0;
+    for spec in to_load {
+        let is_player = spec.char_id == 0;
         let char_pix = if is_player { bf_is_pixel } else { dad_is_pixel };
-        let mut icon = HealthIcon::load(assets, gpu, &icon_id, is_player, None, char_pix);
-        if let Some(s) = scale {
+        let mut icon = HealthIcon::load(assets, gpu, &spec.icon_id, is_player, None, char_pix);
+        if let Some(s) = spec.scale {
             icon.base_scale = s.max(0.05);
         }
-        if let Some(fx) = flip_x {
+        if let Some(fx) = spec.flip_x {
             icon.flip_x = if is_player { !fx } else { fx };
         }
-        if let Some(px) = is_pixel {
+        if let Some(px) = spec.is_pixel {
             icon.is_pixel = px;
         }
-        if let Some(bop) = should_bop {
+        if let Some(bop) = spec.should_bop {
             icon.should_bop = bop;
         }
-        if let Some(off) = offsets {
+        if let Some(off) = spec.offsets {
             icon.offsets = off;
         }
-        scene.register_alternate_icon(char_id, icon);
+        scene.register_alternate_icon(spec.char_id, icon);
     }
 }
 

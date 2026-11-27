@@ -485,7 +485,7 @@ const VIZ_DB_RANGE: f32 = 40.0;
 const VIZ_MIN_FREQ: f32 = 10.0;
 const VIZ_MAX_FREQ: f32 = 22000.0;
 const VIZ_MAX_DELTA: f32 = 0.1;
-const VIZ_DB_PER_LN: f32 = 8.685_889_6;
+const VIZ_DB_PER_LN: f32 = 8.685_889;
 const VIZ_FFT_NORM: f32 = (2.0 / VIZ_FFT_N as f32) * (8.0 / 12.0);
 
 /// Zero-allocation radix-2 FFT & 7-band logarithmic spectrum analyzer
