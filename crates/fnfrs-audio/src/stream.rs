@@ -402,17 +402,16 @@ impl StemStreamReader {
             Default::default(),
             Default::default(),
         )?;
-        let (track_id, audio_params) = format
+        let (track_id, audio_params, header_src_frames) = format
             .tracks()
             .iter()
             .find_map(|track| {
                 let params = track.codec_params.as_ref()?.audio()?;
-                Some((track.id, params.clone()))
+                Some((track.id, params.clone(), track.num_frames))
             })
             .ok_or(DecodeError::NoAudioTrack)?;
 
         let src_rate = audio_params.sample_rate.ok_or(DecodeError::MissingSampleRate)?;
-        let header_src_frames = audio_params.n_frames;
         let decoder =
             symphonia::default::get_codecs().make_audio_decoder(&audio_params, &Default::default())?;
 
