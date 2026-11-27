@@ -10,7 +10,7 @@ use std::thread::{self, JoinHandle, Thread};
 use std::time::Duration;
 
 use rtrb::{Consumer, Producer, RingBuffer};
-use symphonia::core::codecs::AudioDecoder;
+use symphonia::core::codecs::audio::AudioDecoder;
 use symphonia::core::errors::Error as SymphoniaError;
 use symphonia::core::formats::FormatReader;
 use symphonia::core::formats::probe::Hint;
