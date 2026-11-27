@@ -306,7 +306,7 @@ impl PlayScene {
                 c.reset_character(true);
             }
         }
-        self.scripts.sync_gf_opponent_position(self.stage.as_deref(), self.dad.as_mut());
+        self.scripts.sync_gf_opponent_position(self.stage.as_ref(), self.dad.as_mut());
         self.scripts.reset(self.stage.as_mut());
         if let Some(player) = &mut self.bf {
             player.is_dead = false;
