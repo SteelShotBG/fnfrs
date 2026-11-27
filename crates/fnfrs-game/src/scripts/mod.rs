@@ -342,14 +342,14 @@ impl NativeScriptHost {
         self.song_id.eq_ignore_ascii_case("blazin")
     }
 
-    /// True for stages that suppress standard combo popups (`sserafim`).
-    #[must_use]
     /// Returns `true` when the active stage/character script manages GF's beat dancing directly.
     #[must_use]
     pub fn owns_gf_dance(&self) -> bool {
         self.abot.nene_knife_enabled
     }
 
+    /// True for stages that suppress standard combo popups (`sserafim`).
+    #[must_use]
     pub fn hides_popups(&self) -> bool {
         self.stage_id_lower == "sserafim"
     }

@@ -20,7 +20,7 @@ pub(super) struct QuadCarTween {
 }
 
 impl QuadCarTween {
-    fn eval(&mut self, elapsed_s: f32, sprite_x: &mut f32, sprite_y: &mut f32, sprite_angle: &mut f32) -> (bool, bool) {
+    pub(super) fn eval(&mut self, elapsed_s: f32, sprite_x: &mut f32, sprite_y: &mut f32, sprite_angle: &mut f32) -> (bool, bool) {
         // Returns (still_active, finished_this_frame)
         if !self.active {
             return (false, false);

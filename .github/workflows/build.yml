@@ -23,7 +23,7 @@ jobs:
       - name: Install stable Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
-          components: rustfmt, clippy
+          components: clippy
 
       - name: Cache Cargo registry and build artifacts
         uses: Swatinem/rust-cache@v2
@@ -38,10 +38,6 @@ jobs:
 
       - name: Build release binary
         run: cargo build --release --bin fnfrs-app
-
-      - name: Check formatting (advisory)
-        continue-on-error: true
-        run: cargo fmt --all -- --check
 
       - name: Package fnfrs.exe
         shell: pwsh

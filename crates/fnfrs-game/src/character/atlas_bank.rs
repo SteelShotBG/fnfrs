@@ -1109,4 +1109,3 @@ pub(super) const fn dir_upper(dir: NoteDirection) -> &'static str {
     }
 }
 
-/// Runtime V-Slice character controller (`BaseCharacter.hx` + Sparrow/Packer/Animate/Multi).
