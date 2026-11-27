@@ -431,7 +431,6 @@ pub(crate) fn update_and_render_gameplay(
             state.save.options.audio_offset_ms = gp.scene.pause_menu.global_offset_ms;
             let _ = state.save.save_to_disk();
         }
-        let mut finish_song_now = false;
     if gp.scene.pause_menu.is_open {
             if let Some(engine) = audio.as_deref_mut() {
                 let _ = engine.set_pause_loop_gain(gp.scene.pause_menu.music_gain);
@@ -497,7 +496,6 @@ pub(crate) fn update_and_render_gameplay(
                     dispatch_cutscene_audio(&gp.level_assets, audio.as_deref_mut(), gp.cutscene_sfx, q);
                     if gp.waiting_post_cutscene {
                         gp.waiting_post_cutscene = false;
-                        finish_song_now = true;
                     } else {
                         gp.scene.session.is_paused = false;
                         gp.scene.countdown.set_paused(false);
@@ -916,7 +914,7 @@ fn complete_song_or_advance_story(
         &mut state.gpu,
         &state.save,
         gp,
-        audio.as_deref_mut(),
+        audio,
     );
     false
 }
