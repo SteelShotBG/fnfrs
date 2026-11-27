@@ -713,7 +713,7 @@ pub(crate) fn draw_animate_parts(
     let full_prefix = cam_affine.mul(world_base);
 
     for part in parts {
-        let Some(&(tex, _)) = textures.get(part.spritemap_index) else {
+        let Some(&(tex, tex_size)) = textures.get(part.spritemap_index) else {
             continue;
         };
 
@@ -744,12 +744,27 @@ pub(crate) fn draw_animate_parts(
             flags |= SPRITE_FLAG_ROTATED_90_CCW;
         }
 
-        let uv_bounds = [
-            part.uv_rect[0],
-            part.uv_rect[1],
-            part.uv_rect[0] + part.uv_rect[2],
-            part.uv_rect[1] + part.uv_rect[3],
-        ];
+        let u0 = part.uv_rect[0];
+        let v0 = part.uv_rect[1];
+        let u1 = part.uv_rect[0] + part.uv_rect[2];
+        let v1 = part.uv_rect[1] + part.uv_rect[3];
+        let uv_bounds = if matches!(filter, FilterMode::Linear)
+            && tex_size[0] > 0.0
+            && tex_size[1] > 0.0
+        {
+            // Half-texel inset prevents bilinear filtering from bleeding transparent
+            // black spritemap padding across flush Animate symbol seams (e.g. GF hair).
+            let hx = (0.5 / tex_size[0]).min(part.uv_rect[2] * 0.49);
+            let hy = (0.5 / tex_size[1]).min(part.uv_rect[3] * 0.49);
+            [
+                if u0 > 0.0 { u0 + hx } else { u0 },
+                if v0 > 0.0 { v0 + hy } else { v0 },
+                if u1 < 1.0 { u1 - hx } else { u1 },
+                if v1 < 1.0 { v1 - hy } else { v1 },
+            ]
+        } else {
+            [u0, v0, u1, v1]
+        };
         let tint = [
             part.color[0] * params.color[0],
             part.color[1] * params.color[1],

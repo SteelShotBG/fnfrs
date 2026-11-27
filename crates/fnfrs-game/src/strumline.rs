@@ -461,6 +461,11 @@ impl Strumline {
     }
 
     #[inline]
+    pub fn clear_held_keys(&mut self) {
+        self.held_keys.clear();
+    }
+
+    #[inline]
     #[must_use]
     pub fn is_key_held(&self, dir: NoteDirection) -> bool {
         self.held_keys.is_held(dir)

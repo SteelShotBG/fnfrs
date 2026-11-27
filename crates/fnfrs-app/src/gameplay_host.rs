@@ -95,14 +95,14 @@ pub(crate) fn build_active_gameplay(
         .map(|m| m.play_data.characters.opponent.trim())
         .filter(|s| !s.is_empty())
         .unwrap_or("dad");
-    let gf_id = metadata
-        .map(|m| m.play_data.characters.girlfriend.trim())
-        .filter(|s| !s.is_empty())
-        .unwrap_or("gf");
+    let gf_id = match metadata {
+        Some(m) => m.play_data.characters.girlfriend.trim(),
+        None => "gf",
+    };
 
     let bf = BaseCharacter::load_by_id(bf_id, CharacterKind::Bf, &level_assets, gpu);
     let dad = BaseCharacter::load_by_id(dad_id, CharacterKind::Dad, &level_assets, gpu);
-    let gf = if gf_id.eq_ignore_ascii_case("none") {
+    let gf = if gf_id.is_empty() || gf_id.eq_ignore_ascii_case("none") {
         None
     } else {
         BaseCharacter::load_by_id(gf_id, CharacterKind::Gf, &level_assets, gpu)
@@ -538,10 +538,10 @@ pub(crate) fn update_and_render_gameplay(
                 gp.scene.session.refresh_hud();
             }
             PauseMenuAction::ToggleBotplay => {
-                gp.scene.session.config.is_botplay = !gp.scene.session.config.is_botplay;
-                gp.scene.session.refresh_hud();
+                let next = !gp.scene.session.config.is_botplay;
+                gp.scene.session.set_botplay(next);
                 state.downscroll_pref = gp.scene.session.config.is_downscroll;
-                state.botplay_pref = gp.scene.session.config.is_botplay;
+                state.botplay_pref = next;
             }
             PauseMenuAction::ToggleDownscroll => {
                 let next = !gp.scene.session.config.is_downscroll;

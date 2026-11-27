@@ -1,7 +1,7 @@
 use std::time::Instant;
 
 use fnfrs_audio::{AudioCommand, AudioEngine};
-use fnfrs_core::constants::{COUNTDOWN_VOLUME, MS_PER_SEC, VIRTUAL_HEIGHT, VIRTUAL_WIDTH};
+use fnfrs_core::constants::{COUNTDOWN_VOLUME, DEFAULT_CAMERA_FOLLOW_RATE, MS_PER_SEC, VIRTUAL_HEIGHT, VIRTUAL_WIDTH};
 use fnfrs_render::{BitmapFont, BlendMode, FilterMode, MeshBatcher, SpriteBatcher, SpriteInstance, TextureHandle};
 
 use super::session::{PlaySession, PlayStepEvents};
@@ -229,6 +229,14 @@ impl PlayScene {
             self.gf.as_mut(),
         );
         self.scripts = scripts;
+        let initial_focus = initial_camera_focus(
+            self.bf.as_ref(),
+            self.dad.as_ref(),
+            self.gf.as_ref(),
+        );
+        self.camera_rig
+            .cam_game
+            .snap_to(initial_focus[0], initial_focus[1]);
     }
 
     /// Registers a preloaded alternate health icon at song load time for
@@ -298,11 +306,15 @@ impl PlayScene {
                 c.reset_character(true);
             }
         }
+        self.scripts.sync_gf_opponent_position(self.stage.as_deref(), self.dad.as_mut());
         self.scripts.reset(self.stage.as_mut());
         if let Some(player) = &mut self.bf {
             player.is_dead = false;
         }
 
+        let stage_zoom = self.stage.as_ref().map_or(DEFAULT_STAGE_ZOOM, |s| s.camera_zoom);
+        self.camera_rig.cam_game.default_zoom = stage_zoom;
+        self.camera_rig.cam_game.follow_lerp = DEFAULT_CAMERA_FOLLOW_RATE;
         self.camera_rig.reset();
         let focus = initial_camera_focus(self.bf.as_ref(), self.dad.as_ref(), self.gf.as_ref());
         self.camera_rig.cam_game.snap_to(focus[0], focus[1]);
@@ -339,19 +351,29 @@ impl PlayScene {
 
         if self.game_over.phase != GameOverPhase::Inactive {
             inputs.clear();
-            self.camera_rig.update(elapsed_s);
             if let Some(bf) = &mut self.bf {
+                let focus = bf.get_death_camera_focus_point();
+                self.camera_rig.cam_game.set_target(focus[0], focus[1]);
                 let target_anim = match self.game_over.phase {
                     GameOverPhase::FirstDeath => "firstDeath",
                     GameOverPhase::DeathLoop => "deathLoop",
                     GameOverPhase::ConfirmRetry | GameOverPhase::Exiting => "deathConfirm",
                     GameOverPhase::Inactive => "firstDeath",
                 };
+                if matches!(
+                    self.game_over.phase,
+                    GameOverPhase::ConfirmRetry | GameOverPhase::Exiting
+                ) && bf.current_animation() != "deathConfirm"
+                {
+                    let stage_zoom = self.stage.as_ref().map_or(DEFAULT_STAGE_ZOOM, |s| s.camera_zoom);
+                    self.camera_rig.cam_game.tween_zoom(stage_zoom, 0.5, FlxEase::QuadOut);
+                }
                 if bf.current_animation() != target_anim && bf.has_animation(target_anim) {
                     bf.play_animation(target_anim, true, true);
                 }
                 bf.update(elapsed_s, self.session.conductor.beat_length_ms(), false);
             }
+            self.camera_rig.update(elapsed_s);
             return out;
         }
 
@@ -427,9 +449,12 @@ impl PlayScene {
             if let Some(bf) = &mut self.bf {
                 bf.is_dead = true;
                 bf.play_animation("firstDeath", true, true);
-                let focus = bf.get_camera_focus_point();
+                let focus = bf.get_death_camera_focus_point();
+                let stage_zoom = self.stage.as_ref().map_or(DEFAULT_STAGE_ZOOM, |s| s.camera_zoom);
+                let target_zoom = stage_zoom * bf.death_camera_zoom();
+                self.camera_rig.cam_game.follow_lerp = DEFAULT_CAMERA_FOLLOW_RATE * 0.5;
                 self.camera_rig.cam_game.set_target(focus[0], focus[1]);
-                self.camera_rig.cam_game.default_zoom = 1.05;
+                self.camera_rig.cam_game.tween_zoom(target_zoom, 0.5, FlxEase::QuadOut);
             }
             out.game_over_events = self.game_over.trigger_death();
             return out;
@@ -525,6 +550,17 @@ impl PlayScene {
                 if let Some(bf) = &mut self.bf {
                     bf.play_sing_animation(dir, true, "");
                 }
+            }
+        }
+
+        if let Some(combo) = gameplay.combo_hit_count {
+            if let Some(gf) = &mut self.gf {
+                gf.play_combo_animation(combo);
+            }
+        }
+        if let Some(prev_combo) = gameplay.combo_broken_from {
+            if let Some(gf) = &mut self.gf {
+                gf.play_combo_drop_animation(prev_combo);
             }
         }
 

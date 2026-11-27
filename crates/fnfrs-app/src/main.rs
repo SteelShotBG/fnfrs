@@ -521,11 +521,10 @@ impl ApplicationHandler for App {
                             return;
                         }
                         KeyCode::KeyB => {
-                            gp.scene.session.config.is_botplay =
-                                !gp.scene.session.config.is_botplay;
-                            gp.scene.session.refresh_hud();
+                            let next = !gp.scene.session.config.is_botplay;
+                            gp.scene.session.set_botplay(next);
                             state.downscroll_pref = gp.scene.session.config.is_downscroll;
-                            state.botplay_pref = gp.scene.session.config.is_botplay;
+                            state.botplay_pref = next;
                             return;
                         }
                         KeyCode::Tab => {

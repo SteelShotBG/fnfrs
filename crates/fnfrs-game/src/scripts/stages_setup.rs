@@ -281,6 +281,7 @@ impl NativeScriptHost {
         Self {
             song_id: song_id.to_owned(),
             stage_id_lower: stage_lower,
+            dad_is_gf: dad_id.eq_ignore_ascii_case("gf"),
             stage_script,
             spirit_trail,
             speaker_shooter,
@@ -301,6 +302,28 @@ impl NativeScriptHost {
     }
 
     /// Applies one-time initial stage setup & Erect `AdjustColor` shaders after placement.
+    /// Places `dad` at `stage.gf_placement()` when `dad` is `"gf"` (matching `gf.hxc` `onAdd`).
+    pub fn sync_gf_opponent_position(
+        &self,
+        stage: Option<&Stage>,
+        dad: Option<&mut BaseCharacter>,
+    ) {
+        if !self.dad_is_gf {
+            return;
+        }
+        if let (Some(st), Some(d)) = (stage, dad) {
+            let gf_place = st.gf_placement();
+            let origin = d.character_origin();
+            d.position = [
+                gf_place.position[0] - origin[0],
+                gf_place.position[1] - origin[1],
+            ];
+            d.original_position = d.position;
+            d.stage_camera_offsets = gf_place.camera_offsets;
+            d.reset_camera_focus_point();
+        }
+    }
+
     pub fn on_stage_ready(
         &mut self,
         mut stage: Option<&mut Stage>,
@@ -308,6 +331,7 @@ impl NativeScriptHost {
         mut dad: Option<&mut BaseCharacter>,
         mut gf: Option<&mut BaseCharacter>,
     ) {
+        self.sync_gf_opponent_position(stage.as_deref(), dad.as_deref_mut());
         apply_erect_adjust_color(
             &self.stage_id_lower,
             stage.as_deref_mut(),

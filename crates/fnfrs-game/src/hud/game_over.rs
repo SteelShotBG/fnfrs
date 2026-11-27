@@ -176,12 +176,14 @@ impl GameOverState {
                 }
             }
             GameOverPhase::ConfirmRetry => {
-                let dur = self.confirm_fade_duration_s.max(0.1);
-                let progress = (self.timer_s / dur).clamp(0.0, 1.0);
+                // Match `GameOverSubState.hx`: hold on `deathConfirm` briefly before black fade.
+                let delay = 0.7_f32;
+                let dur = self.confirm_fade_duration_s.max(0.8);
+                let fade_t = ((self.timer_s - delay) / (dur - delay).max(0.1)).clamp(0.0, 1.0);
                 self.fade_alpha = if self.is_pixel {
-                    (progress * 10.0).floor() / 10.0
+                    (fade_t * 10.0).floor() / 10.0
                 } else {
-                    progress
+                    fade_t
                 };
                 if self.timer_s >= dur {
                     self.reset();

@@ -487,6 +487,32 @@ impl BaseCharacter {
         self.camera_focus_point
     }
 
+    /// World point targeted by `GameOverSubState.setCameraTarget`.
+    #[inline]
+    #[must_use]
+    pub fn get_death_camera_focus_point(&self) -> [f32; 2] {
+        let death_offsets = self.death_data.as_ref().map_or([0.0, 0.0], |d| d.camera_offsets);
+        [
+            self.camera_focus_point[0]
+                - self.data_camera_offsets[0].trunc()
+                - self.stage_camera_offsets[0].trunc()
+                + death_offsets[0],
+            self.camera_focus_point[1]
+                - self.data_camera_offsets[1].trunc()
+                - self.stage_camera_offsets[1].trunc()
+                + death_offsets[1],
+        ]
+    }
+
+    /// Multiplier applied to stage `camZoom` during game over (`BaseCharacter.getDeathCameraZoom`).
+    #[inline]
+    #[must_use]
+    pub fn death_camera_zoom(&self) -> f32 {
+        self.death_data
+            .as_ref()
+            .map_or(1.0, |d| if d.camera_zoom > 0.0 { d.camera_zoom } else { 1.0 })
+    }
+
     /// Returns `(current_anim_index, current_frame_index, current_anim_offsets)` for trail effects.
     #[inline]
     #[must_use]
@@ -737,7 +763,7 @@ impl BaseCharacter {
 
     /// Plays `danceLeft`/`danceRight` (when alternating) or `idle` (`BaseCharacter.dance`).
     pub fn dance(&mut self, force: bool) {
-        if self.is_dead {
+        if self.is_dead || !self.can_play_other_anims {
             return;
         }
         if !force {

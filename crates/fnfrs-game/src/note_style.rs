@@ -340,11 +340,11 @@ impl NoteStyleAssets {
                             out.strum_confirm_hold[i] = collect_prefix(&sparrow.atlas, p);
                         }
                     }
-                    if let Some(hitbox_frame) = sparrow
-                        .atlas
-                        .frames()
-                        .first()
-                        .or_else(|| out.strum_static[0].first())
+                    if let Some(hitbox_frame) = out
+                        .strum_static
+                        .iter()
+                        .find_map(|frames| frames.first())
+                        .or_else(|| sparrow.atlas.frames().first())
                     {
                         let src = hitbox_frame.source_size();
                         out.strum_hitbox = [src[0] * out.strum_scale, src[1] * out.strum_scale];

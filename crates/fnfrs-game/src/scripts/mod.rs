@@ -241,6 +241,7 @@ pub struct RainShaderParams {
 pub struct NativeScriptHost {
     song_id: String,
     stage_id_lower: String,
+    dad_is_gf: bool,
     stage_script: StageScript,
     spirit_trail: SpiritTrail,
     speaker_shooter: SpeakerShooter,
@@ -268,6 +269,7 @@ impl NativeScriptHost {
         Self {
             song_id: String::new(),
             stage_id_lower: String::new(),
+            dad_is_gf: false,
             stage_script: StageScript::None,
             spirit_trail: SpiritTrail::default(),
             speaker_shooter: SpeakerShooter::default(),

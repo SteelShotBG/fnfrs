@@ -73,6 +73,8 @@ pub struct PlayStepEvents {
     pub player_hit_kind: NoteKindTag,
     pub opponent_hit_dir: Option<NoteDirection>,
     pub opponent_hit_kind: NoteKindTag,
+    pub combo_hit_count: Option<u32>,
+    pub combo_broken_from: Option<u32>,
 }
 
 /// Headless-friendly, zero-allocation gameplay simulation matching `PlayState.hx`.
@@ -129,7 +131,7 @@ impl PlaySession {
         let opponent_x = STRUMLINE_X_OFFSET;
 
         let mut player_strumline = Strumline::new(
-            true,
+            !config.is_botplay,
             config.is_downscroll,
             config.scroll_speed,
             player_x,
@@ -208,7 +210,7 @@ impl PlaySession {
         };
 
         let mut player_strumline = Strumline::new(
-            true,
+            !config.is_botplay,
             config.is_downscroll,
             config.scroll_speed,
             VIRTUAL_WIDTH * 0.5 + STRUMLINE_X_OFFSET,
@@ -274,6 +276,16 @@ impl PlaySession {
     pub fn set_downscroll(&mut self, is_downscroll: bool) {
         self.config.is_downscroll = is_downscroll;
         self.reposition_strumlines();
+    }
+
+    /// Toggles Bot Play mode and synchronizes `player_strumline.is_player` (`!is_botplay`).
+    pub fn set_botplay(&mut self, is_botplay: bool) {
+        self.config.is_botplay = is_botplay;
+        self.player_strumline.is_player = !is_botplay;
+        if is_botplay {
+            self.player_strumline.clear_held_keys();
+        }
+        self.refresh_hud_buffers();
     }
 
     fn reposition_strumlines(&mut self) {
@@ -352,7 +364,8 @@ impl PlaySession {
             style,
         );
 
-        // Botplay hits on player strumline.
+        // Botplay hits on player strumline (`PlayState.processNotes` + `Strumline.hitNote`).
+        let mut bot_hit_any = false;
         for hit_h in player_events
             .bot_hit_handles
             .iter()
@@ -367,6 +380,15 @@ impl PlaySession {
                 if let Some(hh) = hold_h {
                     self.player_strumline.play_note_hold_cover(hh, true);
                 }
+                bot_hit_any = true;
+            }
+        }
+        if bot_hit_any {
+            if let Some(engine) = audio.as_deref_mut() {
+                let _ = engine.send(AudioCommand::SetTrackGain {
+                    track: TrackKind::PlayerVocals,
+                    gain: self.config.player_vocals_gain,
+                });
             }
         }
 
@@ -383,8 +405,14 @@ impl PlaySession {
                 miss_dir = Some(note.direction);
             }
             if !self.config.is_botplay {
+                let prev_combo = self.tallies.combo;
                 self.on_note_miss(audio.as_deref_mut());
                 step_events.missed_note = true;
+                if prev_combo > 0 {
+                    step_events.combo_broken_from = Some(
+                        step_events.combo_broken_from.unwrap_or(0).max(prev_combo),
+                    );
+                }
                 if miss_dir.is_some() {
                     step_events.missed_dir = miss_dir;
                 }
@@ -412,12 +440,18 @@ impl PlaySession {
                 if !self.config.is_botplay && hold.scoreable {
                     let penalty = compute_hold_drop_penalty(hold.sustain_ms, hold.hit_note);
                     if penalty.should_penalize {
+                        let prev_combo = self.tallies.combo;
                         self.apply_score(
                             penalty.score_change,
                             None,
                             penalty.health_change,
                             true,
                         );
+                        if prev_combo > 0 {
+                            step_events.combo_broken_from = Some(
+                                step_events.combo_broken_from.unwrap_or(0).max(prev_combo),
+                            );
+                        }
                         self.play_miss_audio(audio.as_deref_mut(), 0.55);
                         step_events.missed_note = true;
                         step_events.missed_dir = Some(hold_dir);
@@ -464,6 +498,10 @@ impl PlaySession {
         style: &StrumlineVisualStyle,
         step_events: &mut PlayStepEvents,
     ) {
+        if self.config.is_botplay {
+            inputs.clear();
+            return;
+        }
         if inputs.total_len() == 0 {
             return;
         }
@@ -589,7 +627,17 @@ impl PlaySession {
 
         if scoreable {
             self.tallies.total_notes_hit += 1;
+            let prev_combo = self.tallies.combo;
             self.apply_score(points, Some(judgement), health_change, breaks_combo);
+            if breaks_combo {
+                if prev_combo > 0 {
+                    step_events.combo_broken_from = Some(
+                        step_events.combo_broken_from.unwrap_or(0).max(prev_combo),
+                    );
+                }
+            } else {
+                step_events.combo_hit_count = Some(self.tallies.combo);
+            }
             let j_idx = match judgement {
                 Judgement::Sick => 0,
                 Judgement::Good => 1,
@@ -874,7 +922,7 @@ impl PlaySession {
             scale: score_scale,
             color: [1.0, 1.0, 1.0, 1.0],
             align: TextAlign::Left,
-            letter_spacing: 0.0,
+            letter_spacing: -1.0,
             ..Default::default()
         };
         font.draw_bytes_outlined(
