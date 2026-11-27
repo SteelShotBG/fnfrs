@@ -1075,7 +1075,7 @@ pub(super) struct StackBuf<'a> {
 }
 
 impl<'a> StackBuf<'a> {
-    fn new(buf: &'a mut [u8]) -> Self {
+    pub(super) fn new(buf: &'a mut [u8]) -> Self {
         Self { buf, len: 0 }
     }
 
