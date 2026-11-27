@@ -31,11 +31,11 @@ impl DarnellIntroState {
         let dad_focus = scene
             .dad
             .as_ref()
-            .map_or([500.0, 500.0], |d| d.camera_focus_point());
+            .map_or([500.0, 500.0], |d| d.get_camera_focus_point());
         let bf_focus = scene
             .bf
             .as_ref()
-            .map_or([1200.0, 550.0], |b| b.camera_focus_point());
+            .map_or([1200.0, 550.0], |b| b.get_camera_focus_point());
 
         scene
             .camera_rig

@@ -12,14 +12,16 @@ use fnfrs_render::{
 
 use crate::camera::FlxEase;
 use crate::character::{
-    draw_animate_parts, draw_atlas_frame, load_animate_source, load_sparrow_source, Affine2D,
+    draw_animate_parts, draw_atlas_frame, load_animate_source, load_sparrow_source,
     AnimFrames, AtlasDrawParams, LoadedAtlasSource,
 };
+use crate::character::atlas_bank::Affine2D;
 use crate::video::{parse_srt, SubtitleCue};
 
 /// External audio cue requested by an active cutscene step.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum CutsceneAudioRequest {
+    #[default]
     None,
     PlayMusic { key: &'static str, looped: bool },
     PlaySound { key: &'static str },
@@ -191,7 +193,7 @@ impl CutsceneAtlasProp {
         label: Option<&str>,
         looped: bool,
     ) -> Option<Self> {
-        let source = load_animate_source(assets, gpu, key, false)?;
+        let source = load_animate_source(assets, gpu, key, None)?;
         let LoadedAtlasSource::Animate {
             atlas,
             apply_stage_matrix,

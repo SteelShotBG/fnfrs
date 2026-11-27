@@ -52,16 +52,16 @@ impl PhillyDoppelState {
         let player_shoots = (seed & 1) == 0;
         let explode = (seed % 100) < 8;
 
-        let bf_pos = scene.bf.as_ref().map_or([850.0, 100.0], |c| c.pos);
-        let dad_pos = scene.dad.as_ref().map_or([100.0, 100.0], |c| c.pos);
+        let bf_pos = scene.bf.as_ref().map_or([850.0, 100.0], |c| c.position);
+        let dad_pos = scene.dad.as_ref().map_or([100.0, 100.0], |c| c.position);
         let bf_cam = scene
             .bf
             .as_ref()
-            .map_or([700.0, 350.0], |c| c.camera_focus_point());
+            .map_or([700.0, 350.0], |c| c.get_camera_focus_point());
         let dad_cam = scene
             .dad
             .as_ref()
-            .map_or([350.0, 350.0], |c| c.camera_focus_point());
+            .map_or([350.0, 350.0], |c| c.get_camera_focus_point());
 
         if let Some(bf) = &mut scene.bf {
             bf.visible = false;

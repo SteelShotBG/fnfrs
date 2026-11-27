@@ -33,7 +33,7 @@ impl StressPicoOutroState {
         let tankman_focus = scene
             .dad
             .as_ref()
-            .map_or([400.0, 350.0], |d| d.camera_focus_point());
+            .map_or([400.0, 350.0], |d| d.get_camera_focus_point());
 
         scene.camera_rig.cam_game.tween_to(
             tankman_focus[0] + 320.0,
