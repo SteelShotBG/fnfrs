@@ -1,5 +1,4 @@
 use std::collections::HashMap;
-use std::fmt::Write as _;
 use std::fs;
 use std::path::Path;
 
@@ -1070,7 +1069,7 @@ pub(crate) fn format_stack_join<'a>(
     std::str::from_utf8(&buf[..total]).ok()
 }
 
-struct StackBuf<'a> {
+pub(super) struct StackBuf<'a> {
     buf: &'a mut [u8],
     len: usize,
 }
