@@ -10,7 +10,7 @@ use std::thread::{self, JoinHandle, Thread};
 use std::time::Duration;
 
 use rtrb::{Consumer, Producer, RingBuffer};
-use symphonia::core::codecs::Decoder;
+use symphonia::core::codecs::AudioDecoder;
 use symphonia::core::errors::Error as SymphoniaError;
 use symphonia::core::formats::FormatReader;
 use symphonia::core::formats::probe::Hint;
@@ -374,7 +374,7 @@ fn push_stream_frames(
 struct StemStreamReader {
     format: Box<dyn FormatReader>,
     track_id: u32,
-    decoder: Box<dyn Decoder>,
+    decoder: Box<dyn AudioDecoder>,
     src_rate: u32,
     target_rate: u32,
     header_src_frames: Option<u64>,
