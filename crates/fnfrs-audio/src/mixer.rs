@@ -169,7 +169,7 @@ impl VideoAudioProducer {
     #[inline]
     pub fn push_s16n_stereo(&mut self, samples: &[i16]) {
         const INV_I16: f32 = 1.0 / 32768.0;
-        for pair in samples.chunks_exact(2) {
+        for pair in samples.as_chunks::<2>().0 {
             let l = f32::from(pair[0]) * INV_I16;
             let r = f32::from(pair[1]) * INV_I16;
             if self.tx.push([l, r]).is_err() {
