@@ -503,6 +503,8 @@ fn draw_dialogue_bank(
         adjust_color: None,
         wiggle: None,
         ref_unscaled_size: None,
+        drop_shadow: None,
+        rain: None,
     };
     draw_atlas_frame(
         batcher,

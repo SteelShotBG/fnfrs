@@ -257,10 +257,10 @@ impl NativeScriptHost {
                     }
                     let char_c = 0.376 + (0.871 - 0.376) * t_fast;
                     let gf_c = 0.376 + (0.533 - 0.376) * t_fast;
-                    if let Some(b) = bf {
+                    if let Some(b) = bf.as_deref_mut() {
                         b.color = [char_c, char_c, char_c, 1.0];
                     }
-                    if let Some(d) = dad {
+                    if let Some(d) = dad.as_deref_mut() {
                         d.color = [char_c, char_c, char_c, 1.0];
                     }
                     if let Some(g) = gf.as_deref_mut() {

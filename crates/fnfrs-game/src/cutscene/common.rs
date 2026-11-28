@@ -357,6 +357,8 @@ impl CutsceneAtlasProp {
             adjust_color: self.adjust_color,
             wiggle: None,
             ref_unscaled_size: None,
+            drop_shadow: None,
+            rain: None,
         };
         match &self.source {
             LoadedAtlasSource::Animate {

@@ -10,9 +10,10 @@ on:
 env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: 0
+  CARGO_PROFILE_DEV_DEBUG: 0
 
 jobs:
-  build-windows:
+  check-and-test:
     runs-on: windows-latest
     steps:
       - name: Checkout repository
@@ -28,15 +29,33 @@ jobs:
       - name: Cache Cargo registry and build artifacts
         uses: Swatinem/rust-cache@v2
         with:
-          cache-on-failure: true
-          cache-workspace-crates: true
+          prefix-key: v1-rust-check
+          cache-on-failure: false
           cache-all-crates: true
+          cache-workspace-crates: true
 
       - name: Run Clippy
         run: cargo clippy --workspace --all-targets --keep-going -- -D warnings
 
       - name: Run tests
         run: cargo test --workspace --no-fail-fast
+
+  build-release:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Install stable Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo registry and build artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: v1-rust-release
+          cache-on-failure: false
 
       - name: Build release binary
         run: cargo build --release --bin fnfrs-app

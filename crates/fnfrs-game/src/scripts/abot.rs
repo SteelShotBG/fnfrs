@@ -151,6 +151,8 @@ impl LoadedAnimateProp {
             adjust_color,
             wiggle: None,
             ref_unscaled_size: None,
+            drop_shadow: None,
+            rain: None,
         };
         draw_animate_parts(
             batcher,

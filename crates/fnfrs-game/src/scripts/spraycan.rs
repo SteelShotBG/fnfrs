@@ -454,6 +454,8 @@ impl SpraycanPool {
             adjust_color: None,
             wiggle: None,
             ref_unscaled_size: None,
+            drop_shadow: None,
+            rain: None,
         };
 
         for (idx, slot) in self.slots.iter().enumerate() {
