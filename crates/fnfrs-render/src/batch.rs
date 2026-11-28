@@ -5,6 +5,7 @@ use bytemuck::{Pod, Zeroable};
 use fnfrs_core::constants::{VIRTUAL_HEIGHT, VIRTUAL_WIDTH};
 
 pub use crate::gpu::FilterMode;
+use crate::drop_shadow::{DropShadowBatchPool, DropShadowParams};
 use crate::gpu::{
     orthographic_projection, zoomed_orthographic_projection, GpuContext, TextureHandle,
 };
@@ -37,6 +38,9 @@ pub const SPRITE_FLAG_ADJUST_COLOR: u32 = 1 << 6;
 
 /// Flag enabling Flixel `WiggleEffect` DREAMY wave (`hsbc = [time, freq, speed, amp]`).
 pub const SPRITE_FLAG_WIGGLE: u32 = 1 << 7;
+
+/// Flag enabling sprite-mode `RuntimeRainShader` (`hsbc = [time, scale, intensity, 0.0]`).
+pub const SPRITE_FLAG_RAIN: u32 = 1 << 8;
 
 /// Blend mode used when drawing sprite or mesh batches.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
@@ -236,7 +240,16 @@ impl SpriteInstance {
     #[must_use]
     pub const fn with_wiggle(mut self, time: f32, freq: f32, speed: f32, amp: f32) -> Self {
         self.hsbc = [time, freq, speed, amp];
-        self.flags = (self.flags & !SPRITE_FLAG_ADJUST_COLOR) | SPRITE_FLAG_WIGGLE;
+        self.flags = (self.flags & !(SPRITE_FLAG_ADJUST_COLOR | SPRITE_FLAG_RAIN)) | SPRITE_FLAG_WIGGLE;
+        self
+    }
+
+    /// Enables sprite-mode `RuntimeRainShader` (`time_s`, `scale`, `intensity`).
+    #[inline]
+    #[must_use]
+    pub const fn with_rain(mut self, time: f32, scale: f32, intensity: f32) -> Self {
+        self.hsbc = [time, scale, intensity, 0.0];
+        self.flags = (self.flags & !(SPRITE_FLAG_ADJUST_COLOR | SPRITE_FLAG_WIGGLE)) | SPRITE_FLAG_RAIN;
         self
     }
 
@@ -309,6 +322,7 @@ pub struct SpriteDrawGroup {
     pub filter: FilterMode,
     pub instance_start: u32,
     pub instance_end: u32,
+    pub drop_shadow_slot: Option<u32>,
 }
 
 /// Pre-allocated CPU sprite queue that coalesces adjacent compatible draw calls
@@ -339,7 +353,7 @@ impl SpriteBatchQueue {
     }
 
     /// Appends one sprite instance, coalescing into the trailing draw group
-    /// when `(texture, blend, filter)` matches.
+    /// when `(texture, blend, filter, drop_shadow_slot)` matches.
     #[inline]
     pub fn push(
         &mut self,
@@ -347,6 +361,18 @@ impl SpriteBatchQueue {
         blend: BlendMode,
         filter: FilterMode,
         instance: SpriteInstance,
+    ) {
+        self.push_with_drop_shadow(texture, blend, filter, instance, None);
+    }
+
+    #[inline]
+    pub fn push_with_drop_shadow(
+        &mut self,
+        texture: TextureHandle,
+        blend: BlendMode,
+        filter: FilterMode,
+        instance: SpriteInstance,
+        drop_shadow_slot: Option<u32>,
     ) {
         let start = self.instances.len() as u32;
         self.instances.push(instance);
@@ -356,6 +382,7 @@ impl SpriteBatchQueue {
             if last.texture == texture
                 && last.blend == blend
                 && last.filter == filter
+                && last.drop_shadow_slot == drop_shadow_slot
                 && last.instance_end == start
             {
                 last.instance_end = end;
@@ -369,6 +396,7 @@ impl SpriteBatchQueue {
             filter,
             instance_start: start,
             instance_end: end,
+            drop_shadow_slot,
         });
     }
 
@@ -414,6 +442,7 @@ pub struct SpriteBatcher {
     pipeline_add: wgpu::RenderPipeline,
     pipeline_screen: wgpu::RenderPipeline,
     pipeline_multiply: wgpu::RenderPipeline,
+    drop_shadows: DropShadowBatchPool,
 }
 
 impl SpriteBatcher {
@@ -509,6 +538,13 @@ impl SpriteBatcher {
             "fnfrs-sprite-pipeline-multiply",
         );
 
+        let drop_shadows = DropShadowBatchPool::new(
+            &gpu.device,
+            &camera_bind_group_layout,
+            &gpu.texture_bind_group_layout,
+            format,
+        );
+
         Self {
             queue,
             instance_buffer,
@@ -519,6 +555,7 @@ impl SpriteBatcher {
             pipeline_add,
             pipeline_screen,
             pipeline_multiply,
+            drop_shadows,
         }
     }
 
@@ -526,6 +563,7 @@ impl SpriteBatcher {
     #[inline]
     pub fn begin_frame(&mut self) {
         self.queue.begin_frame();
+        self.drop_shadows.begin_frame();
     }
 
     /// Updates the orthographic/camera projection uniform matrix.
@@ -562,6 +600,21 @@ impl SpriteBatcher {
         self.queue.push(texture, blend, filter, instance);
     }
 
+    /// Enqueues a sprite instance rendered with `DropShadowShader` (`DropShadowParams`).
+    #[inline]
+    pub fn push_drop_shadow(
+        &mut self,
+        texture: TextureHandle,
+        blend: BlendMode,
+        filter: FilterMode,
+        instance: SpriteInstance,
+        shadow: DropShadowParams,
+    ) {
+        let slot = self.drop_shadows.push(shadow);
+        self.queue
+            .push_with_drop_shadow(texture, blend, filter, instance, Some(slot));
+    }
+
     /// Returns the number of queued instances in the current frame.
     #[inline]
     #[must_use]
@@ -586,6 +639,7 @@ impl SpriteBatcher {
     /// Uploads queued sprite instances to the GPU instance buffer, growing the
     /// GPU buffer only if `instance_count > instance_buffer_capacity`.
     pub fn prepare(&mut self, device: &wgpu::Device, queue: &wgpu::Queue) {
+        self.drop_shadows.prepare(device, queue);
         let instances = self.queue.instances();
         if instances.is_empty() {
             return;
@@ -608,25 +662,45 @@ impl SpriteBatcher {
         render_pass.set_bind_group(0, &self.camera_bind_group, &[]);
         render_pass.set_vertex_buffer(0, self.instance_buffer.slice(..));
 
-        let mut active_blend: Option<BlendMode> = None;
+        let mut active_state: Option<(BlendMode, bool)> = None;
 
         for group in groups {
             let Some(tex_bg) = gpu.texture_bind_group(group.texture, group.filter, false) else {
                 continue;
             };
 
-            if active_blend != Some(group.blend) {
-                let pipeline = match group.blend {
-                    BlendMode::Normal => &self.pipeline_normal,
-                    BlendMode::Add => &self.pipeline_add,
-                    BlendMode::Screen => &self.pipeline_screen,
-                    BlendMode::Multiply => &self.pipeline_multiply,
+            let is_ds = group.drop_shadow_slot.is_some();
+            if active_state != Some((group.blend, is_ds)) {
+                let pipeline = if is_ds {
+                    self.drop_shadows.pipeline()
+                } else {
+                    match group.blend {
+                        BlendMode::Normal => &self.pipeline_normal,
+                        BlendMode::Add => &self.pipeline_add,
+                        BlendMode::Screen => &self.pipeline_screen,
+                        BlendMode::Multiply => &self.pipeline_multiply,
+                    }
                 };
                 render_pass.set_pipeline(pipeline);
-                active_blend = Some(group.blend);
+                active_state = Some((group.blend, is_ds));
             }
 
             render_pass.set_bind_group(1, tex_bg, &[]);
+            if let Some(slot_idx) = group.drop_shadow_slot {
+                let Some(ds_bg) = self.drop_shadows.bind_group(slot_idx) else {
+                    continue;
+                };
+                let mask_tex = self
+                    .drop_shadows
+                    .params(slot_idx)
+                    .and_then(|p| p.alt_mask_tex)
+                    .unwrap_or_else(|| gpu.white_texture());
+                let Some(mask_bg) = gpu.texture_bind_group(mask_tex, group.filter, false) else {
+                    continue;
+                };
+                render_pass.set_bind_group(2, ds_bg, &[]);
+                render_pass.set_bind_group(3, mask_bg, &[]);
+            }
             render_pass.draw(0..6, group.instance_start..group.instance_end);
         }
     }

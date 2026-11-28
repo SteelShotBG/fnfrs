@@ -50,65 +50,71 @@ impl NativeScriptHost {
         match &mut self.stage_script {
             StageScript::SpookyMansion {
                 is_erect: true,
-                flash_timer_s: Some(t),
+                flash_timer_s,
                 ..
             } => {
-                *t += elapsed_s.max(0.0);
-                if *t < 0.06 {
-                    // Initial bright flash (silhouettes)
-                } else if *t < 0.12 {
-                    if let Some(ref mut st) = stage {
-                        for nm in ["bgLight", "stairsLight"] {
-                            if let Some(p) = st.get_named_prop_mut(nm) {
-                                p.alpha = 0.0;
+                self.rain_time += elapsed_s.max(0.0);
+                if let Some(ref mut st) = stage {
+                    if let Some(trees) = st.get_named_prop_mut("bgTrees") {
+                        trees.rain = Some([self.rain_time, 7.2, 0.4]);
+                    }
+                }
+                if let Some(t) = flash_timer_s.as_mut() {
+                    *t += elapsed_s.max(0.0);
+                    if *t < 0.06 {
+                        // Initial bright flash (silhouettes)
+                    } else if *t < 0.12 {
+                        if let Some(ref mut st) = stage {
+                            for nm in ["bgLight", "stairsLight"] {
+                                if let Some(p) = st.get_named_prop_mut(nm) {
+                                    p.alpha = 0.0;
+                                }
                             }
                         }
-                    }
-                    if let Some(b) = bf.as_deref_mut() {
-                        b.alpha = 1.0;
-                    }
-                    if let Some(d) = dad.as_deref_mut() {
-                        d.alpha = 1.0;
-                    }
-                    if let Some(g) = gf.as_deref_mut() {
-                        g.alpha = 1.0;
-                    }
-                } else if *t < 1.62 {
-                    let fade = ((*t - 0.12) / 1.5).clamp(0.0, 1.0);
-                    if let Some(ref mut st) = stage {
-                        for nm in ["bgLight", "stairsLight"] {
-                            if let Some(p) = st.get_named_prop_mut(nm) {
-                                p.alpha = 1.0 - fade;
+                        if let Some(b) = bf.as_deref_mut() {
+                            b.alpha = 1.0;
+                        }
+                        if let Some(d) = dad.as_deref_mut() {
+                            d.alpha = 1.0;
+                        }
+                        if let Some(g) = gf.as_deref_mut() {
+                            g.alpha = 1.0;
+                        }
+                    } else if *t < 1.62 {
+                        let fade = ((*t - 0.12) / 1.5).clamp(0.0, 1.0);
+                        if let Some(ref mut st) = stage {
+                            for nm in ["bgLight", "stairsLight"] {
+                                if let Some(p) = st.get_named_prop_mut(nm) {
+                                    p.alpha = 1.0 - fade;
+                                }
                             }
                         }
-                    }
-                    if let Some(b) = bf.as_deref_mut() {
-                        b.alpha = fade;
-                    }
-                    if let Some(d) = dad.as_deref_mut() {
-                        d.alpha = fade;
-                    }
-                    if let Some(g) = gf.as_deref_mut() {
-                        g.alpha = fade;
-                    }
-                } else {
-                    if let Some(ref mut st) = stage {
-                        for nm in ["bgLight", "stairsLight"] {
-                            if let Some(p) = st.get_named_prop_mut(nm) {
-                                p.alpha = 0.0;
+                        if let Some(b) = bf.as_deref_mut() {
+                            b.alpha = fade;
+                        }
+                        if let Some(d) = dad.as_deref_mut() {
+                            d.alpha = fade;
+                        }
+                        if let Some(g) = gf.as_deref_mut() {
+                            g.alpha = fade;
+                        }
+                    } else {
+                        if let Some(ref mut st) = stage {
+                            for nm in ["bgLight", "stairsLight"] {
+                                if let Some(p) = st.get_named_prop_mut(nm) {
+                                    p.alpha = 0.0;
+                                }
                             }
                         }
-                    }
-                    if let Some(b) = bf.as_deref_mut() {
-                        b.alpha = 1.0;
-                    }
-                    if let Some(d) = dad.as_deref_mut() {
-                        d.alpha = 1.0;
-                    }
-                    if let Some(g) = gf.as_deref_mut() {
-                        g.alpha = 1.0;
-                    }
-                    if let StageScript::SpookyMansion { flash_timer_s, .. } = &mut self.stage_script {
+                        if let Some(b) = bf.as_deref_mut() {
+                            b.alpha = 1.0;
+                        }
+                        if let Some(d) = dad.as_deref_mut() {
+                            d.alpha = 1.0;
+                        }
+                        if let Some(g) = gf.as_deref_mut() {
+                            g.alpha = 1.0;
+                        }
                         *flash_timer_s = None;
                     }
                 }
@@ -269,14 +275,15 @@ impl NativeScriptHost {
                 *time_s += elapsed_s.max(0.0);
                 let t = *time_s;
                 if let Some(ref mut st) = stage {
+                    // `wiggle = [time, freq, speed, amp]` matching `WiggleEffectRuntime(speed, freq, amp)`.
                     for (nm, w) in [
                         ("backTrees", [t, 1.6, 1.6, 0.011]),
-                        ("school", [t, 2.0, 4.0, 0.017]),
-                        ("street", [t, 2.0, 4.0, 0.007]),
-                        ("trees", [t, 2.0, 4.0, 0.007]),
-                        ("evilstreet", [t, 2.0, 4.0, 0.007]),
+                        ("school", [t, 4.0, 2.0, 0.017]),
+                        ("street", [t, 4.0, 2.0, 0.007]),
+                        ("trees", [t, 4.0, 2.0, 0.007]),
+                        ("evilstreet", [t, 4.0, 2.0, 0.007]),
                         ("backspikes", [t, 1.6, 1.6, 0.011]),
-                        ("backspike", [t, 2.0, 4.0, 0.010]),
+                        ("backspike", [t, 4.0, 2.0, 0.010]),
                     ] {
                         if let Some(p) = st.get_named_prop_mut(nm) {
                             p.wiggle = Some(w);
@@ -455,7 +462,9 @@ impl NativeScriptHost {
         }
 
         self.abot
-            .update(elapsed_s, song_pos_ms, health, train_passing_flag, gf);
+            .update(elapsed_s, song_pos_ms, health, train_passing_flag, gf.as_deref_mut());
+        self.spooky_overlays
+            .update(elapsed_s, beat_length_ms, bf.as_deref(), dad.as_deref(), gf.as_deref());
         out
     }
 
@@ -599,6 +608,9 @@ impl NativeScriptHost {
                 }
             }
         }
+
+        self.spooky_overlays
+            .draw_range(batcher, z_start, z_end, cam_pos, cam_zoom);
     }
 }
 

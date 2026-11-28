@@ -6,7 +6,7 @@ use fnfrs_core::constants::{KEY_COUNT, MS_PER_SEC, STEPS_PER_BEAT};
 use fnfrs_core::paths::AssetLocator;
 use fnfrs_core::schema::character::{CharacterData, CharacterRenderType, DeathData, HealthIconData};
 use fnfrs_core::schema::stage::StageDataCharacter;
-use fnfrs_render::{AtlasFrame, BlendMode, GpuContext, SpriteBatcher};
+use fnfrs_render::{AtlasFrame, BlendMode, DropShadowParams, GpuContext, SpriteBatcher};
 
 use super::atlas_bank::{
     build_loaded_anim, dir_upper, draw_atlas_frame, format_stack_join, load_animate_source,
@@ -38,6 +38,7 @@ pub struct BaseCharacter {
     pub angle: f32,
     pub is_pixel: bool,
     pub adjust_color: Option<[f32; 4]>,
+    pub drop_shadow: Option<DropShadowParams>,
     pub flip_x: bool,
     pub data_flip_x: bool,
     pub dance_every: f32,
@@ -344,6 +345,7 @@ impl BaseCharacter {
             angle: 0.0,
             is_pixel: data.is_pixel,
             adjust_color: None,
+            drop_shadow: None,
             flip_x,
             data_flip_x: data.flip_x,
             dance_every: data.dance_every,
@@ -575,7 +577,9 @@ impl BaseCharacter {
             blend: BlendMode::Normal,
             is_pixel: self.is_pixel,
             adjust_color: self.adjust_color,
+            drop_shadow: self.drop_shadow,
             wiggle: None,
+            rain: None,
             ref_unscaled_size: Some(self.ref_unscaled_size),
         };
         draw_atlas_frame(
@@ -976,7 +980,9 @@ impl BaseCharacter {
             blend: BlendMode::Normal,
             is_pixel: self.is_pixel,
             adjust_color: self.adjust_color,
+            drop_shadow: self.drop_shadow,
             wiggle: None,
+            rain: None,
             ref_unscaled_size: Some(self.ref_unscaled_size),
         };
         self.bank.draw_current(batcher, &params);

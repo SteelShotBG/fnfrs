@@ -19,6 +19,14 @@ impl NativeScriptHost {
         cam_flash_dur: &mut Option<f32>,
     ) -> ScriptStepOutput {
         let mut out = ScriptStepOutput::default();
+        if event_kind == "EnableMask" {
+            if let Some(d) = dad {
+                if let Some(ds) = &mut d.drop_shadow {
+                    ds.use_alt_mask = ds.alt_mask_tex.is_some();
+                }
+            }
+            return out;
+        }
         let StageScript::Sserafim {
             yunjin,
             chaewon,

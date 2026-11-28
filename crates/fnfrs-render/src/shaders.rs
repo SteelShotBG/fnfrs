@@ -11,6 +11,9 @@ pub const MESH_SHADER_SOURCE: &str = include_str!("shaders/mesh.wgsl");
 /// Embedded WGSL source for the fullscreen `RuntimeRainShader` post-process pass.
 pub const RAIN_SHADER_SOURCE: &str = include_str!("shaders/rain.wgsl");
 
+/// Embedded WGSL source for the per-sprite drop-shadow / rim-light shader.
+pub const DROP_SHADOW_SHADER_SOURCE: &str = include_str!("shaders/drop_shadow.wgsl");
+
 /// Compiles the instanced sprite WGSL shader module on `device`.
 #[must_use]
 pub fn create_sprite_shader_module(device: &wgpu::Device) -> wgpu::ShaderModule {
@@ -38,6 +41,15 @@ pub fn create_rain_shader_module(device: &wgpu::Device) -> wgpu::ShaderModule {
     })
 }
 
+/// Compiles the per-sprite drop-shadow / rim-light WGSL shader module on `device`.
+#[must_use]
+pub fn create_drop_shadow_shader_module(device: &wgpu::Device) -> wgpu::ShaderModule {
+    device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("fnfrs-drop-shadow-shader"),
+        source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(DROP_SHADOW_SHADER_SOURCE)),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -50,5 +62,7 @@ mod tests {
         assert!(MESH_SHADER_SOURCE.contains("fn fs_main"));
         assert!(RAIN_SHADER_SOURCE.contains("fn vs_main"));
         assert!(RAIN_SHADER_SOURCE.contains("fn fs_main"));
+        assert!(DROP_SHADOW_SHADER_SOURCE.contains("fn vs_main"));
+        assert!(DROP_SHADOW_SHADER_SOURCE.contains("fn fs_main"));
     }
 }

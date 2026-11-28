@@ -9,8 +9,8 @@ use fnfrs_core::paths::AssetLocator;
 use fnfrs_core::schema::parse_hex_color;
 use fnfrs_core::schema::stage::{StageData, StageDataCharacter, StageDataCharacters, StageDataProp};
 use fnfrs_render::{
-    BlendMode, FilterMode, GpuContext, SpriteBatcher, SpriteInstance, TextureHandle,
-    SPRITE_FLAG_FLIP_X, SPRITE_FLAG_FLIP_Y,
+    BlendMode, DropShadowParams, FilterMode, GpuContext, SpriteBatcher, SpriteInstance,
+    TextureHandle, SPRITE_FLAG_FLIP_X, SPRITE_FLAG_FLIP_Y,
 };
 
 use crate::character::{
@@ -276,7 +276,9 @@ pub struct StageProp {
     pub blend: BlendMode,
     pub color: [f32; 4],
     pub adjust_color: Option<[f32; 4]>,
+    pub drop_shadow: Option<DropShadowParams>,
     pub wiggle: Option<[f32; 4]>,
+    pub rain: Option<[f32; 3]>,
     pub is_pixel: bool,
     pub is_hud: bool,
     pub visible: bool,
@@ -310,7 +312,9 @@ impl StageProp {
             blend: BlendMode::Normal,
             color: parse_stage_color(color_hex),
             adjust_color: None,
+            drop_shadow: None,
             wiggle: None,
+            rain: None,
             is_pixel: false,
             is_hud: false,
             visible: true,
@@ -407,7 +411,9 @@ impl StageProp {
             blend,
             color: prop_color,
             adjust_color: None,
+            drop_shadow: None,
             wiggle: None,
+            rain: None,
             is_pixel: data.is_pixel,
             is_hud: false,
             visible: true,
@@ -489,7 +495,9 @@ impl StageProp {
             blend: parse_blend_mode(&data.blend),
             color: prop_color,
             adjust_color: None,
+            drop_shadow: None,
             wiggle: None,
+            rain: None,
             is_pixel: data.is_pixel,
             is_hud: false,
             visible: true,
@@ -592,12 +600,18 @@ impl StageProp {
                     .with_color(tint)
                     .with_rotation(self.angle.to_radians(), origin)
                     .with_flags(flags);
-                if let Some([h, s, b, c]) = self.adjust_color {
-                    inst = inst.with_adjust_color(h, s, b, c);
-                } else if let Some([t, f, sp, amp]) = self.wiggle {
-                    inst = inst.with_wiggle(t, f, sp, amp);
+                if let Some(ds) = self.drop_shadow {
+                    batcher.push_drop_shadow(*texture, self.blend, filter, inst, ds);
+                } else {
+                    if let Some([h, s, b, c]) = self.adjust_color {
+                        inst = inst.with_adjust_color(h, s, b, c);
+                    } else if let Some([t, f, sp, amp]) = self.wiggle {
+                        inst = inst.with_wiggle(t, f, sp, amp);
+                    } else if let Some([t, sc, int]) = self.rain {
+                        inst = inst.with_rain(t, sc, int);
+                    }
+                    batcher.push(*texture, self.blend, filter, inst);
                 }
-                batcher.push(*texture, self.blend, filter, inst);
             }
             PropVisual::Animated => {
                 let Some(bop) = &self.bopper else {
@@ -619,7 +633,9 @@ impl StageProp {
                     blend: self.blend,
                     is_pixel: self.is_pixel,
                     adjust_color: self.adjust_color,
+                    drop_shadow: self.drop_shadow,
                     wiggle: self.wiggle,
+                    rain: self.rain,
                     ref_unscaled_size: None,
                 };
                 bop.bank.draw_current(batcher, &params);

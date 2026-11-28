@@ -7,8 +7,8 @@ use fnfrs_core::paths::AssetLocator;
 use fnfrs_core::schema::character::AnimationData;
 use fnfrs_core::schema::stage::TextureAtlasData;
 use fnfrs_render::{
-    AnimateAtlas, AtlasFrame, BlendMode, EvaluatedPart, FilterMode, GpuContext, PackerAtlas,
-    SparrowAtlas, SpriteBatcher, SpriteInstance, TextureHandle, SPRITE_FLAG_AFFINE,
+    AnimateAtlas, AtlasFrame, BlendMode, DropShadowParams, EvaluatedPart, FilterMode, GpuContext,
+    PackerAtlas, SparrowAtlas, SpriteBatcher, SpriteInstance, TextureHandle, SPRITE_FLAG_AFFINE,
     SPRITE_FLAG_FLIP_X, SPRITE_FLAG_FLIP_Y, SPRITE_FLAG_ROTATED_90_CCW,
 };
 
@@ -526,7 +526,9 @@ pub(crate) struct AtlasDrawParams {
     pub blend: BlendMode,
     pub is_pixel: bool,
     pub adjust_color: Option<[f32; 4]>,
+    pub drop_shadow: Option<DropShadowParams>,
     pub wiggle: Option<[f32; 4]>,
+    pub rain: Option<[f32; 3]>,
     #[allow(dead_code)]
     pub ref_unscaled_size: Option<[f32; 2]>,
 }
@@ -633,10 +635,16 @@ pub(crate) fn draw_atlas_frame(
         .with_color(tint)
         .with_rotation(params.angle_deg.to_radians(), origin_rel)
         .with_flags(flags);
+    if let Some(ds) = params.drop_shadow {
+        batcher.push_drop_shadow(texture, params.blend, filter, inst, ds);
+        return;
+    }
     if let Some([h, s, b, c]) = params.adjust_color {
         inst = inst.with_adjust_color(h, s, b, c);
     } else if let Some([t, f, sp, amp]) = params.wiggle {
         inst = inst.with_wiggle(t, f, sp, amp);
+    } else if let Some([t, sc, int]) = params.rain {
+        inst = inst.with_rain(t, sc, int);
     }
 
     batcher.push(texture, params.blend, filter, inst);
@@ -778,11 +786,14 @@ pub(crate) fn draw_animate_parts(
             .with_uv_rect(uv_bounds)
             .with_color(tint)
             .with_flags(flags);
-        if let Some([h, s, b, c]) = params.adjust_color {
-            inst = inst.with_adjust_color(h, s, b, c);
+        if let Some(ds) = params.drop_shadow {
+            batcher.push_drop_shadow(tex, params.blend, filter, inst, ds);
+        } else {
+            if let Some([h, s, b, c]) = params.adjust_color {
+                inst = inst.with_adjust_color(h, s, b, c);
+            }
+            batcher.push(tex, params.blend, filter, inst);
         }
-
-        batcher.push(tex, params.blend, filter, inst);
     }
 }
 

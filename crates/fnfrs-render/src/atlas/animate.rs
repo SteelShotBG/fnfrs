@@ -121,6 +121,7 @@ struct CompiledTimeline {
 pub struct AnimateAtlas {
     frame_rate: f32,
     stage_matrix: Affine2,
+    main_symbol_name: Option<String>,
     spritemaps: Vec<SpritemapInfo>,
     sprites: Vec<AnimateSprite>,
     sprite_index: FxHashMap<String, usize>,
@@ -219,9 +220,11 @@ impl AnimateAtlas {
             .map(|si| extract_affine(si.mx, si.m3d, si.pos))
             .unwrap_or(Affine2::IDENTITY);
 
+        let main_symbol_name = raw_anim.an.symbol_name;
         Ok(Self {
             frame_rate,
             stage_matrix,
+            main_symbol_name,
             spritemaps,
             sprites,
             sprite_index,
@@ -281,13 +284,22 @@ impl AnimateAtlas {
         self.labels.get(label).copied()
     }
 
-    /// Returns the total frame count of a named symbol in `SD.S`.
+    fn timeline_for_symbol(&self, symbol_name: &str) -> Option<&CompiledTimeline> {
+        if let Some(&sym_idx) = self.symbol_index.get(symbol_name) {
+            return Some(&self.symbols[sym_idx]);
+        }
+        if self.main_symbol_name.as_deref() == Some(symbol_name) {
+            return Some(&self.main_timeline);
+        }
+        None
+    }
+
+    /// Returns the total frame count of a named symbol in `SD.S` (or `AN.SN` main timeline).
     #[inline]
     #[must_use]
     pub fn symbol_total_frames(&self, symbol_name: &str) -> Option<u32> {
-        self.symbol_index
-            .get(symbol_name)
-            .map(|&idx| self.symbols[idx].total_frames)
+        self.timeline_for_symbol(symbol_name)
+            .map(|t| t.total_frames)
     }
 
     /// Computes union `[origin, size]` bounding box over all frames of the main timeline (`AN.TL`).
@@ -297,11 +309,11 @@ impl AnimateAtlas {
             .unwrap_or(([0.0, 0.0], [1.0, 1.0]))
     }
 
-    /// Computes union `[origin, size]` bounding box over all frames of a symbol inside `SD.S`.
+    /// Computes union `[origin, size]` bounding box over all frames of a symbol inside `SD.S` (or `AN.SN`).
     #[must_use]
     pub fn symbol_bounds(&self, symbol_name: &str) -> Option<([f32; 2], [f32; 2])> {
-        let &sym_idx = self.symbol_index.get(symbol_name)?;
-        self.compute_timeline_bounds(&self.symbols[sym_idx])
+        let timeline = self.timeline_for_symbol(symbol_name)?;
+        self.compute_timeline_bounds(timeline)
     }
 
     fn compute_timeline_bounds(&self, timeline: &CompiledTimeline) -> Option<([f32; 2], [f32; 2])> {
@@ -376,8 +388,8 @@ impl AnimateAtlas {
         true
     }
 
-    /// Evaluates a named symbol from `SD.S` directly at `local_frame`, clearing `out_parts` first
-    /// with zero heap allocations. Returns `false` if `symbol_name` is unknown.
+    /// Evaluates a named symbol from `SD.S` (or `AN.SN` main timeline) directly at `local_frame`,
+    /// clearing `out_parts` first with zero heap allocations. Returns `false` if `symbol_name` is unknown.
     pub fn evaluate_symbol(
         &self,
         symbol_name: &str,
@@ -385,10 +397,9 @@ impl AnimateAtlas {
         out_parts: &mut Vec<EvaluatedPart>,
     ) -> bool {
         out_parts.clear();
-        let Some(&sym_idx) = self.symbol_index.get(symbol_name) else {
+        let Some(timeline) = self.timeline_for_symbol(symbol_name) else {
             return false;
         };
-        let timeline = &self.symbols[sym_idx];
         let clamped = local_frame.min(timeline.total_frames.saturating_sub(1));
         self.eval_timeline(timeline, clamped, EvalCtx::ROOT, out_parts);
         true
@@ -917,6 +928,7 @@ impl LegacyAnimationDoc {
         });
         RawAnimationDoc {
             an: RawAnimationNode {
+                symbol_name: None,
                 timeline: self.animation.timeline.into_raw(),
                 stage_instance,
             },
@@ -955,6 +967,8 @@ struct RawMetadata {
 
 #[derive(Deserialize)]
 struct RawAnimationNode {
+    #[serde(rename = "SN", default)]
+    symbol_name: Option<String>,
     #[serde(rename = "TL")]
     timeline: RawTimeline,
     #[serde(rename = "STI", default)]

@@ -1,11 +1,12 @@
 use fnfrs_core::paths::AssetLocator;
 use fnfrs_core::schema::song::SongNoteData;
-use fnfrs_render::{BlendMode, GpuContext};
+use fnfrs_render::{BlendMode, DropShadowParams, GpuContext};
 
 use super::abot::ABotSpeaker;
 use super::blazin::BlazinFighterState;
 use super::speaker::SpeakerShooter;
 use super::spirit::SpiritTrail;
+use super::spooky::SpookyDarkOverlays;
 use super::spraycan::{QuadCarTween, SpraycanPool};
 use super::tankmen::TankmanRunners;
 use super::{NativeScriptHost, ScriptRng, ScriptSfxSlots, StageScript};
@@ -76,9 +77,11 @@ pub(super) fn apply_erect_adjust_color(
             set_char(gf, chars_hsbc);
             set_char(dad, chars_hsbc);
             if let Some(st) = stage {
+                // santa gets the same color shader as the characters
+                set_prop(st, "santa", chars_hsbc);
+                // only bottomBoppers gets the boppers shader (hue=15, brightness=20)
                 let boppers_hsbc = [15.0, 0.0, 20.0, 0.0];
                 set_prop(st, "bottomBoppers", boppers_hsbc);
-                set_prop(st, "upperBoppers", boppers_hsbc);
             }
         }
         "phillytrainerect" => {
@@ -97,17 +100,6 @@ pub(super) fn apply_erect_adjust_color(
                     set_prop(st, name, hsbc);
                 }
             }
-        }
-        "schoolerect" => {
-            set_char(bf, [-10.0, 0.0, -16.0, 12.0]);
-            set_char(gf, [-10.0, 0.0, -20.0, 8.0]);
-            set_char(dad, [-10.0, 0.0, -16.0, 12.0]);
-        }
-        "tankmanbattlefielderect" => {
-            let hsbc = [-38.0, -20.0, -46.0, -25.0];
-            set_char(bf, hsbc);
-            set_char(gf, hsbc);
-            set_char(dad, hsbc);
         }
         _ => {}
     }
@@ -255,16 +247,49 @@ impl NativeScriptHost {
         let abot = ABotSpeaker::load(gf_id, stage_id, gf, assets, gpu);
         let runners = TankmanRunners::load(song_id, stage_id, picospeaker_notes, assets, gpu, &mut rng);
         let spraycans = SpraycanPool::load(song_id, assets, gpu);
+        let spooky_overlays = SpookyDarkOverlays::load(&stage_lower, dad_id, gf_id, assets, gpu);
+
+        let load_mask = |gpu: &mut GpuContext, key: &str| {
+            upload_png_path(gpu, Some(key), &assets.image(key)).map(|(tex, _)| tex)
+        };
+        let drop_shadow_masks = if stage_lower == "schoolerect" {
+            [
+                load_mask(gpu, "weeb/erect/masks/bfPixel_mask"),
+                load_mask(gpu, "weeb/erect/masks/picoPixel_mask"),
+                if gf_id.eq_ignore_ascii_case("nene-pixel") {
+                    load_mask(gpu, "weeb/erect/masks/nenePixel_mask")
+                } else {
+                    load_mask(gpu, "weeb/erect/masks/gfPixel_mask")
+                },
+                load_mask(gpu, "weeb/erect/masks/senpai_mask"),
+            ]
+        } else if stage_lower == "tankmanbattlefielderect" {
+            [
+                None,
+                None,
+                if gf_id.eq_ignore_ascii_case("gf-tankmen") {
+                    load_mask(gpu, "erect/masks/gfTankmen_mask")
+                } else if gf_id.eq_ignore_ascii_case("nene-tankmen") {
+                    load_mask(gpu, "erect/masks/neneTankmen_mask")
+                } else {
+                    None
+                },
+                if dad_id.eq_ignore_ascii_case("tankman-bloody") {
+                    load_mask(gpu, "erect/masks/tankmanCaptainBloody_mask")
+                } else {
+                    None
+                },
+            ]
+        } else {
+            [None; 4]
+        };
 
         let rain_enabled = stage_lower == "phillystreets"
             || stage_lower == "phillystreetserect"
-            || stage_lower == "phillyblazin"
-            || stage_lower == "spookymansionerect";
+            || stage_lower == "phillyblazin";
         let (rain_scale, rain_start_intensity, rain_end_intensity) = if stage_lower == "phillyblazin"
         {
             (3.6, 0.5, 0.5)
-        } else if stage_lower == "spookymansionerect" {
-            (7.2, 0.4, 0.4)
         } else if stage_lower == "phillystreets" || stage_lower == "phillystreetserect" {
             let song_lower = song_id.to_ascii_lowercase();
             if song_lower == "darnell" {
@@ -301,6 +326,8 @@ impl NativeScriptHost {
             rain_end_intensity,
             rain_duration_ms: 180_000.0,
             rain_color: [0.659, 0.678, 0.710],
+            spooky_overlays,
+            drop_shadow_masks,
         }
     }
 
@@ -342,6 +369,9 @@ impl NativeScriptHost {
             dad.as_deref_mut(),
             gf.as_deref_mut(),
         );
+        self.spooky_overlays
+            .on_stage_ready(bf.as_deref(), dad.as_deref(), gf.as_deref());
+        self.apply_stage_drop_shadows(bf.as_deref_mut(), dad.as_deref_mut(), gf.as_deref_mut());
         match &mut self.stage_script {
             StageScript::SpookyMansion { is_erect: true, .. } => {
                 if let Some(st) = stage {
@@ -491,6 +521,7 @@ impl NativeScriptHost {
             for prop in &mut st.props {
                 prop.color = [1.0, 1.0, 1.0, 1.0];
                 prop.wiggle = None;
+                prop.rain = None;
             }
         }
         match &mut self.stage_script {
@@ -651,6 +682,107 @@ impl NativeScriptHost {
                 }
             }
             StageScript::None | StageScript::School | StageScript::SchoolEvil { .. } | StageScript::TankmanBattlefield { .. } => {}
+        }
+    }
+
+    fn apply_stage_drop_shadows(
+        &self,
+        bf: Option<&mut BaseCharacter>,
+        dad: Option<&mut BaseCharacter>,
+        gf: Option<&mut BaseCharacter>,
+    ) {
+        if self.stage_id_lower == "schoolerect" {
+            let rim_color = DropShadowParams::color_from_hex(0x52351D);
+            if let Some(b) = bf {
+                let mask = if b.id.eq_ignore_ascii_case("pico-pixel") {
+                    self.drop_shadow_masks[1]
+                } else {
+                    self.drop_shadow_masks[0]
+                };
+                b.drop_shadow = Some(DropShadowParams {
+                    color: rim_color,
+                    angle_deg: 90.0,
+                    distance: 5.0,
+                    strength: 1.0,
+                    threshold: 0.1,
+                    mask_threshold: 1.0,
+                    use_alt_mask: mask.is_some(),
+                    alt_mask_tex: mask,
+                    adjust_color: [-10.0, -23.0, -66.0, 24.0],
+                });
+            }
+            if let Some(g) = gf {
+                let mask = self.drop_shadow_masks[2];
+                g.drop_shadow = Some(DropShadowParams {
+                    color: rim_color,
+                    angle_deg: 90.0,
+                    distance: 3.0,
+                    strength: 1.0,
+                    threshold: 0.3,
+                    mask_threshold: 1.0,
+                    use_alt_mask: mask.is_some(),
+                    alt_mask_tex: mask,
+                    adjust_color: [-10.0, -25.0, -42.0, 5.0],
+                });
+            }
+            if let Some(d) = dad {
+                let mask = self.drop_shadow_masks[3];
+                d.drop_shadow = Some(DropShadowParams {
+                    color: rim_color,
+                    angle_deg: 90.0,
+                    distance: 5.0,
+                    strength: 1.0,
+                    threshold: 0.1,
+                    mask_threshold: 1.0,
+                    use_alt_mask: mask.is_some(),
+                    alt_mask_tex: mask,
+                    adjust_color: [-10.0, -23.0, -66.0, 24.0],
+                });
+            }
+        } else if self.stage_id_lower == "tankmanbattlefielderect" {
+            let rim_color = DropShadowParams::color_from_hex(0xDFEF3C);
+            let hsbc = [-38.0, -20.0, -46.0, -25.0];
+            if let Some(b) = bf {
+                b.drop_shadow = Some(DropShadowParams {
+                    color: rim_color,
+                    angle_deg: 90.0,
+                    distance: 15.0,
+                    strength: 1.0,
+                    threshold: 0.1,
+                    mask_threshold: 0.0,
+                    use_alt_mask: false,
+                    alt_mask_tex: None,
+                    adjust_color: hsbc,
+                });
+            }
+            if let Some(g) = gf {
+                let mask = self.drop_shadow_masks[2];
+                g.drop_shadow = Some(DropShadowParams {
+                    color: rim_color,
+                    angle_deg: 90.0,
+                    distance: 15.0,
+                    strength: 1.0,
+                    threshold: 0.1,
+                    mask_threshold: 0.4,
+                    use_alt_mask: mask.is_some(),
+                    alt_mask_tex: mask,
+                    adjust_color: hsbc,
+                });
+            }
+            if let Some(d) = dad {
+                let mask = self.drop_shadow_masks[3];
+                d.drop_shadow = Some(DropShadowParams {
+                    color: rim_color,
+                    angle_deg: 25.0,
+                    distance: 15.0,
+                    strength: 1.0,
+                    threshold: 0.3,
+                    mask_threshold: 1.0,
+                    use_alt_mask: false,
+                    alt_mask_tex: mask,
+                    adjust_color: hsbc,
+                });
+            }
         }
     }
 }

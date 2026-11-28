@@ -24,6 +24,7 @@ const FLAG_ROTATED_90_CCW: u32 = 16u;
 const FLAG_AFFINE: u32 = 32u;
 const FLAG_ADJUST_COLOR: u32 = 64u;
 const FLAG_WIGGLE: u32 = 128u;
+const FLAG_RAIN: u32 = 256u;
 
 struct SpriteInstanceInput {
     @location(0) pos: vec2<f32>,
@@ -152,16 +153,83 @@ fn apply_adjust_color(color: vec3<f32>, hsbc: vec4<f32>) -> vec3<f32> {
     return vec3<f32>(dot(contrasted, s0), dot(contrasted, s1), dot(contrasted, s2));
 }
 
+fn rain_rand2(a: vec2<f32>) -> f32 {
+    let m = a - vec2<f32>(1000.0) * floor(a / vec2<f32>(1000.0));
+    return fract(sin(dot(m, vec2<f32>(12.9898, 78.233))) * 43758.5453);
+}
+
+fn sprite_rain_dist(p_in: vec2<f32>, time: f32, scale: f32, intensity: f32) -> f32 {
+    var p = p_in * 0.1;
+    p.x += p.y * 0.1;
+    p.y -= time * 500.0 / scale;
+    p.y *= 0.03;
+    let ix = floor(p.x);
+    let mod_ix = ix - 2.0 * floor(ix * 0.5);
+    p.y += mod_ix * 0.5 + (rain_rand2(vec2<f32>(ix, ix)) - 0.5) * 0.3;
+    let iy = floor(p.y);
+    let idx = vec2<f32>(ix, iy);
+    p -= idx;
+    p.x += (rain_rand2(idx.yx) * 2.0 - 1.0) * 0.35;
+    let a = abs(p - 0.5);
+    let res = max(a.x * 0.8, a.y * 0.5) - 0.1;
+    let empty = rain_rand2(idx) < mix(1.0, 0.1, intensity);
+    return select(res, 1.0, empty);
+}
+
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     var sample_uv = in.uv;
+    let tex_sz = vec2<f32>(textureDimensions(sprite_tex, 0));
     if (in.flags & FLAG_WIGGLE) != 0u {
-        // Flixel WiggleEffect DREAMY mode (`hsbc = [time, freq, speed, amp]`).
-        let wave = sin(sample_uv.y * in.hsbc.y * 6.2831853 + in.hsbc.x * in.hsbc.z) * in.hsbc.w;
-        sample_uv.x = clamp(sample_uv.x + wave, 0.0, 1.0);
+        // Flixel WiggleEffect DREAMY mode matching wiggle.frag exactly.
+        // hsbc = [time, freq, speed, amp].
+        let w = 1.0 / tex_sz.y;  // pixel height in UV
+        let h = 1.0 / tex_sz.x;  // pixel width  in UV
+
+        // Snap X to pixel grid
+        sample_uv.x = floor(sample_uv.x / h) * h;
+
+        // X → Y distortion (full freq/speed/amp)
+        let offset_x = sin(sample_uv.x * in.hsbc.y + in.hsbc.x * in.hsbc.z) * in.hsbc.w;
+        sample_uv.y = sample_uv.y + floor(offset_x / w) * w;
+        sample_uv.y = floor(sample_uv.y / w) * w;
+
+        // Y → X distortion (half freq/speed/amp)
+        let offset_y = sin(sample_uv.y * (in.hsbc.y * 0.5) + in.hsbc.x * (in.hsbc.z * 0.5)) * (in.hsbc.w * 0.5);
+        sample_uv.x = clamp(sample_uv.x + floor(offset_y / h) * h, 0.0, 1.0);
+        sample_uv.y = clamp(sample_uv.y, 0.0, 1.0);
     }
+
+    var rain_add = vec3<f32>(0.0);
+    var rain_sum = 0.0;
+    if (in.flags & FLAG_RAIN) != 0u {
+        // Sprite-mode RuntimeRainShader (`hsbc = [time, scale, intensity, 0.0]`).
+        let r_time = in.hsbc.x;
+        let r_scale = max(in.hsbc.y, 0.1);
+        let r_intensity = in.hsbc.z;
+        let orig_wpos = sample_uv * tex_sz;
+        var wpos = orig_wpos;
+        var scales = array<f32, 4>(1.0, 1.8, 2.6, 4.8);
+        for (var i = 0; i < 4; i = i + 1) {
+            let s = scales[i];
+            let r = sprite_rain_dist(wpos * s / r_scale + 500.0 * f32(i), r_time, s, r_intensity);
+            if r < 0.0 {
+                let v = (1.0 - exp(r * 5.0)) / s * 2.0;
+                wpos.x += v * 10.0 * r_scale;
+                wpos.y -= v * 2.0 * r_scale;
+                rain_add += vec3<f32>(0.1, 0.15, 0.2) * v;
+                rain_sum += (1.0 - rain_sum) * 0.75;
+            }
+        }
+        sample_uv = clamp(wpos / tex_sz, vec2<f32>(0.0), vec2<f32>(1.0));
+    }
+
     let tex_color = textureSample(sprite_tex, sprite_sampler, sample_uv);
     var rgb = tex_color.rgb;
+    if (in.flags & FLAG_RAIN) != 0u {
+        rgb = rgb + rain_add;
+        rgb = mix(rgb, vec3<f32>(0.659, 0.678, 0.710), 0.1 * rain_sum);
+    }
 
     if (in.flags & FLAG_ADJUST_COLOR) != 0u {
         rgb = apply_adjust_color(rgb, in.hsbc);

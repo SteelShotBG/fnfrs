@@ -6,6 +6,7 @@ mod abot_vis;
 mod blazin;
 mod speaker;
 mod spirit;
+mod spooky;
 mod spraycan;
 mod stages_events;
 mod stages_runtime;
@@ -22,6 +23,7 @@ pub use blazin::BlazinNoteKind;
 use blazin::{parse_blazin_note_kind, BlazinFighterState};
 use speaker::SpeakerShooter;
 use spirit::SpiritTrail;
+use spooky::SpookyDarkOverlays;
 use spraycan::{QuadCarTween, SpraycanPool};
 use crate::character::BaseCharacter;
 use tankmen::TankmanRunners;
@@ -272,6 +274,8 @@ pub struct NativeScriptHost {
     rain_end_intensity: f32,
     rain_duration_ms: f64,
     rain_color: [f32; 3],
+    spooky_overlays: SpookyDarkOverlays,
+    drop_shadow_masks: [Option<TextureHandle>; 4],
 }
 
 
@@ -301,6 +305,8 @@ impl NativeScriptHost {
             rain_end_intensity: 0.0,
             rain_duration_ms: 180_000.0,
             rain_color: [0.659, 0.678, 0.710],
+            spooky_overlays: SpookyDarkOverlays::default(),
+            drop_shadow_masks: [None; 4],
         }
     }
 

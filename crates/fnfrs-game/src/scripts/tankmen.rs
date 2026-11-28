@@ -1,8 +1,8 @@
 use fnfrs_core::paths::AssetLocator;
 use fnfrs_core::schema::song::SongNoteData;
 use fnfrs_render::{
-    AtlasFrame, BlendMode, FilterMode, GpuContext, SparrowAtlas, SpriteBatcher, SpriteInstance,
-    TextureHandle, SPRITE_FLAG_FLIP_X, SPRITE_FLAG_ROTATED_90_CCW,
+    AtlasFrame, BlendMode, DropShadowParams, FilterMode, GpuContext, SparrowAtlas, SpriteBatcher,
+    SpriteInstance, TextureHandle, SPRITE_FLAG_FLIP_X, SPRITE_FLAG_ROTATED_90_CCW,
 };
 
 use super::ScriptRng;
@@ -269,13 +269,25 @@ impl TankmanRunners {
             if flip_x ^ frame.flip_x {
                 flags |= SPRITE_FLAG_FLIP_X;
             }
-            let mut inst = SpriteInstance::new(pos, size)
+            let inst = SpriteInstance::new(pos, size)
                 .with_uv_rect(frame.uv_bounds_inset(self.tex_size[0], self.tex_size[1], 1.0))
                 .with_flags(flags);
             if self.is_erect {
-                inst = inst.with_adjust_color(-38.0, -20.0, -46.0, -25.0);
+                let ds = DropShadowParams {
+                    color: DropShadowParams::color_from_hex(0xDFEF3C),
+                    angle_deg: 135.0,
+                    distance: 15.0,
+                    strength: 1.0,
+                    threshold: 0.4,
+                    mask_threshold: 0.0,
+                    use_alt_mask: false,
+                    alt_mask_tex: None,
+                    adjust_color: [-38.0, -20.0, -46.0, -25.0],
+                };
+                batcher.push_drop_shadow(tex, BlendMode::Normal, FilterMode::Linear, inst, ds);
+            } else {
+                batcher.push(tex, BlendMode::Normal, FilterMode::Linear, inst);
             }
-            batcher.push(tex, BlendMode::Normal, FilterMode::Linear, inst);
         }
     }
 }
