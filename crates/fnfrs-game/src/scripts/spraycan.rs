@@ -2,7 +2,7 @@ use std::f32::consts::PI;
 
 use fnfrs_core::paths::AssetLocator;
 use fnfrs_render::{
-    AnimateAtlas, AtlasFrame, BlendMode, EvaluatedPart, FilterMode, GpuContext, SpriteBatcher,
+    AnimateAtlas, AtlasFrame, BlendMode, EvaluatedPart, GpuContext, SpriteBatcher,
     TextureHandle,
 };
 

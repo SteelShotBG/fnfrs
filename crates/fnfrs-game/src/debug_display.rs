@@ -390,13 +390,13 @@ impl FunkinDebugDisplay {
 
         if !advanced {
             let _ = write!(self.fps_buf, "FPS: {}", self.fps);
-            font.draw_bytes(batcher, font_tex, self.fps_buf.as_bytes(), [tx, ty], &text_style);
+            font.draw_bytes(batcher, font_tex, self.fps_buf.as_bytes(), tx, ty, &text_style);
             if has_task_mem {
                 font.draw_bytes(
                     batcher,
                     font_tex,
                     self.mem_buf.as_bytes(),
-                    [tx, ty + line_step],
+                    tx, ty + line_step,
                     &text_style,
                 );
             }
@@ -406,7 +406,7 @@ impl FunkinDebugDisplay {
         let avg = self.fps_graph.average().floor() as u32;
         let low = self.fps_graph.lowest().floor() as u32;
         let _ = write!(self.fps_buf, "FPS: {}", self.fps);
-        font.draw_bytes(batcher, font_tex, self.fps_buf.as_bytes(), [tx, ty], &text_style);
+        font.draw_bytes(batcher, font_tex, self.fps_buf.as_bytes(), tx, ty, &text_style);
 
         self.fps_buf.clear();
         let _ = write!(self.fps_buf, "AVG FPS: {avg}");
@@ -414,7 +414,7 @@ impl FunkinDebugDisplay {
             batcher,
             font_tex,
             self.fps_buf.as_bytes(),
-            [tx, ty + line_step],
+            tx, ty + line_step,
             &text_style,
         );
 
@@ -424,7 +424,7 @@ impl FunkinDebugDisplay {
             batcher,
             font_tex,
             self.fps_buf.as_bytes(),
-            [tx, ty + line_step * 2.0],
+            tx, ty + line_step * 2.0,
             &text_style,
         );
 
@@ -440,7 +440,7 @@ impl FunkinDebugDisplay {
                 batcher,
                 font_tex,
                 self.mem_buf.as_bytes(),
-                [task_gy * 0.0 + fps_gx, task_gy - 22.0],
+                task_gy * 0.0 + fps_gx, task_gy - 22.0,
                 &text_style,
             );
             self.task_mem_graph

@@ -22,7 +22,8 @@ use crate::scripts::NativeScriptHost;
 use crate::stage::{Stage, StageProp};
 use crate::strumline::{Strumline, StrumlineVisualStyle};
 use fnfrs_core::paths::AssetLocator;
-use fnfrs_core::schema::stage::{StagePropAnimationData, StagePropData};
+use fnfrs_core::schema::character::AnimationData;
+use fnfrs_core::schema::stage::StageDataProp;
 use fnfrs_render::GpuContext;
 /// Initialization parameters for [`PlayScene`].
 #[derive(Debug, Clone)]
@@ -290,7 +291,7 @@ impl PlayScene {
         let Some(gf) = self.gf.as_ref() else {
             return;
         };
-        let prop_data = StagePropData {
+        let prop_data = StageDataProp {
             name: Some("neneKnifeToss".to_owned()),
             asset_path: "characters/NeneKnifeToss".to_owned(),
             position: [gf.original_position[0] + 120.0, gf.original_position[1]],
@@ -302,7 +303,7 @@ impl PlayScene {
             alpha: 1.0,
             dance_every: 0.0,
             scroll: [1.0, 1.0],
-            animations: vec![StagePropAnimationData {
+            animations: vec![AnimationData {
                 name: "throw".to_owned(),
                 prefix: "knife toss0".to_owned(),
                 flip_x: false,
