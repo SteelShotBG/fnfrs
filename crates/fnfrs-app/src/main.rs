@@ -363,8 +363,8 @@ impl ApplicationHandler for App {
 
                 if pressed && !event.repeat {
                     match code {
-                        KeyCode::F3 => {
-                            state.save.options.debug_display = state.debug_display.toggle();
+                        KeyCode::F6 => {
+                            state.save.options.debug_display = state.debug_display.cycle();
                             let _ = state.save.save_to_disk();
                             return;
                         }
@@ -551,6 +551,9 @@ impl ApplicationHandler for App {
                             gp.inputs.clear();
                             if let Some(engine) = self.audio.as_mut() {
                                 let _ = engine.pause();
+                                if gp.cutscene.is_active() {
+                                    let _ = engine.set_video_audio_paused(true);
+                                }
                                 let pause_path = gp
                                     .level_assets
                                     .music(gp.scene.game_over.pause_music_key.as_str());

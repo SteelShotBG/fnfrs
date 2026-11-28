@@ -34,6 +34,7 @@ pub struct PlayConfig {
     pub opponent_vocals_gain: f32,
     pub start_timestamp_ms: f64,
     pub use_countdown_sfx_slots: bool,
+    pub is_2hot: bool,
 }
 
 impl Default for PlayConfig {
@@ -49,6 +50,7 @@ impl Default for PlayConfig {
             opponent_vocals_gain: 1.0,
             start_timestamp_ms: 0.0,
             use_countdown_sfx_slots: false,
+            is_2hot: false,
         }
     }
 }
@@ -68,6 +70,7 @@ pub struct PlayStepEvents {
     pub missed_note: bool,
     pub ghost_missed: bool,
     pub missed_dir: Option<NoteDirection>,
+    pub missed_kind: NoteKindTag,
     pub died: bool,
     pub player_hit_dir: Option<NoteDirection>,
     pub player_hit_kind: NoteKindTag,
@@ -96,6 +99,7 @@ pub struct PlaySession {
     pub sfx_slots: GameplaySfxSlots,
     pub hide_opponent_strumline: bool,
     pub hide_popups: bool,
+    pub can_fire_gun: bool,
 
     score_text_buf: [u8; 32],
     score_text_len: usize,
@@ -181,6 +185,7 @@ impl PlaySession {
             sfx_slots: GameplaySfxSlots::default(),
             hide_opponent_strumline: false,
             hide_popups: false,
+            can_fire_gun: true,
             score_text_buf: [0u8; 32],
             score_text_len: 0,
             strum_hitbox_height: STRUMLINE_SIZE,
@@ -247,6 +252,7 @@ impl PlaySession {
             sfx_slots: GameplaySfxSlots::default(),
             hide_opponent_strumline: false,
             hide_popups: false,
+            can_fire_gun: true,
             score_text_buf: [0u8; 32],
             score_text_len: 0,
             strum_hitbox_height: STRUMLINE_SIZE,
@@ -400,14 +406,17 @@ impl PlaySession {
             .flatten()
         {
             let mut miss_dir = None;
+            let mut miss_kind = NoteKindTag::Normal;
             if let Some(note) = self.player_strumline.notes.get_mut(*miss_h) {
                 note.handled_miss = true;
                 miss_dir = Some(note.direction);
+                miss_kind = note.kind;
             }
             if !self.config.is_botplay {
                 let prev_combo = self.tallies.combo;
-                self.on_note_miss(audio.as_deref_mut());
+                self.on_note_miss(audio.as_deref_mut(), miss_kind);
                 step_events.missed_note = true;
+                step_events.missed_kind = miss_kind;
                 if prev_combo > 0 {
                     step_events.combo_broken_from = Some(
                         step_events.combo_broken_from.unwrap_or(0).max(prev_combo),
@@ -537,6 +546,9 @@ impl PlaySession {
             for (i, slot) in buckets[lane].iter().take(lane_count).enumerate() {
                 if let Some(handle) = *slot {
                     if let Some(note) = self.player_strumline.notes.get(handle) {
+                        if note.kind == NoteKindTag::Weekend1FireGun && !self.can_fire_gun {
+                            continue;
+                        }
                         if !note.low_priority && (!found_normal_priority || note.strum_time_ms < best_time) {
                             found_normal_priority = true;
                             best_time = note.strum_time_ms;
@@ -549,6 +561,10 @@ impl PlaySession {
                 }
             }
 
+            if !found_normal_priority && best_time.is_infinite() {
+                self.player_strumline.play_press(ev.direction);
+                continue;
+            }
             let Some(target_handle) = buckets[lane][chosen_slot] else {
                 continue;
             };
@@ -660,20 +676,23 @@ impl PlaySession {
             );
         }
 
+        if kind == NoteKindTag::Weekend1CockGun {
+            self.can_fire_gun = true;
+        }
         step_events.last_judgement = Some(judgement);
         step_events.last_note_diff_ms = Some(truncated_diff);
         step_events.player_hit_dir = Some(direction);
         step_events.player_hit_kind = kind;
     }
 
-    fn on_note_miss(&mut self, audio: Option<&mut AudioEngine>) {
+    fn on_note_miss(&mut self, audio: Option<&mut AudioEngine>, kind: NoteKindTag) {
         let miss_score = f64::from(get_miss_score(self.config.scoring_system));
-        self.apply_score(
-            miss_score,
-            Some(Judgement::Miss),
-            HEALTH_MISS_PENALTY,
-            true,
-        );
+        let health_delta = match kind {
+            NoteKindTag::Weekend1CockGun if self.config.is_2hot => 0.0,
+            NoteKindTag::Weekend1FireGun if self.config.is_2hot => -0.5,
+            _ => HEALTH_MISS_PENALTY,
+        };
+        self.apply_score(miss_score, Some(Judgement::Miss), health_delta, true);
         self.play_miss_audio(audio, 0.55);
     }
 

@@ -462,6 +462,7 @@ impl BaseCharacter {
         self.hold_timer = 0.0;
         self.has_danced = false;
         self.can_play_other_anims = true;
+        self.is_dead = false;
         self.is_bloody = false;
         self.last_dance_step = None;
         self.dance(true);
@@ -593,6 +594,13 @@ impl BaseCharacter {
     #[must_use]
     pub fn current_animation(&self) -> &str {
         self.bank.current_name()
+    }
+
+    /// Returns the 0-based active frame index within the current animation.
+    #[inline]
+    #[must_use]
+    pub fn current_frame_index(&self) -> usize {
+        self.bank.current_frame
     }
 
     /// Returns the active animation's `[x, y]` offset.

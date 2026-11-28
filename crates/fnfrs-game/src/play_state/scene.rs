@@ -19,8 +19,11 @@ use crate::hud::{
 use crate::input::InputQueue;
 use crate::note_style::NoteStyleAssets;
 use crate::scripts::NativeScriptHost;
-use crate::stage::Stage;
+use crate::stage::{Stage, StageProp};
 use crate::strumline::{Strumline, StrumlineVisualStyle};
+use fnfrs_core::paths::AssetLocator;
+use fnfrs_core::schema::stage::{StagePropAnimationData, StagePropData};
+use fnfrs_render::GpuContext;
 /// Initialization parameters for [`PlayScene`].
 #[derive(Debug, Clone)]
 pub struct PlaySceneConfig {
@@ -131,6 +134,7 @@ pub struct PlayScene {
     pub scene_config: PlaySceneConfig,
     pub scripts: NativeScriptHost,
     pub hide_hud_for_cutscene: bool,
+    game_over_nene_toss: Option<StageProp>,
 
     base_scroll_speed: f64,
     health_bar_size: [f32; 2],
@@ -164,7 +168,12 @@ impl PlayScene {
 
         let stage_zoom = stage.as_ref().map_or(DEFAULT_STAGE_ZOOM, |s| s.camera_zoom);
         let mut camera_rig = CameraRig::new(stage_zoom);
-        let initial_focus = initial_camera_focus(bf.as_ref(), dad.as_ref(), gf.as_ref());
+        let initial_focus = initial_camera_focus_for_stage(
+            stage.as_ref().map(|s| s.id.as_str()),
+            bf.as_ref(),
+            dad.as_ref(),
+            gf.as_ref(),
+        );
         camera_rig.cam_game.snap_to(initial_focus[0], initial_focus[1]);
 
         let pause_menu = PauseMenuState::new(&scene_config.song_name, &scene_config.difficulty);
@@ -209,6 +218,7 @@ impl PlayScene {
             scene_config,
             scripts: NativeScriptHost::empty(),
             hide_hud_for_cutscene: false,
+            game_over_nene_toss: None,
             base_scroll_speed,
             health_bar_size: [601.0, 19.0],
             player_scroll_tween: ScrollSpeedTween::default(),
@@ -233,7 +243,8 @@ impl PlayScene {
             self.gf.as_mut(),
         );
         self.scripts = scripts;
-        let initial_focus = initial_camera_focus(
+        let initial_focus = initial_camera_focus_for_stage(
+            self.stage.as_ref().map(|s| s.id.as_str()),
             self.bf.as_ref(),
             self.dad.as_ref(),
             self.gf.as_ref(),
@@ -241,6 +252,16 @@ impl PlayScene {
         self.camera_rig
             .cam_game
             .snap_to(initial_focus[0], initial_focus[1]);
+        if self
+            .stage
+            .as_ref()
+            .is_some_and(|s| s.id.eq_ignore_ascii_case("phillyBlazin"))
+        {
+            self.session.popups.offsets = [480.0, -50.0];
+            self.camera_rig
+                .cam_game
+                .flash([0.0, 0.0, 0.0, 1.0], 1.5);
+        }
     }
 
     /// Registers a preloaded alternate health icon at song load time for
@@ -252,6 +273,55 @@ impl PlayScene {
     /// Updates cached health bar dimensions used to anchor [`HealthIcon`]s.
     pub fn set_health_bar_size(&mut self, width: f32, height: f32) {
         self.health_bar_size = [width.max(10.0), height.max(10.0)];
+    }
+
+    /// Preloads `characters/NeneKnifeToss` behind Pico for standard Week/Weekend 1 Game Over.
+    pub fn load_game_over_extras(
+        &mut self,
+        assets: &AssetLocator,
+        gpu: &mut GpuContext,
+        bf_id: &str,
+        bf_is_pixel: bool,
+    ) {
+        let lower_bf = bf_id.to_ascii_lowercase();
+        if !lower_bf.starts_with("pico") || lower_bf == "pico-blazin" || bf_is_pixel {
+            return;
+        }
+        let Some(gf) = self.gf.as_ref() else {
+            return;
+        };
+        let prop_data = StagePropData {
+            name: Some("neneKnifeToss".to_owned()),
+            asset_path: "characters/NeneKnifeToss".to_owned(),
+            position: [gf.original_position[0] + 120.0, gf.original_position[1]],
+            z_index: 195,
+            is_pixel: false,
+            flip_x: false,
+            flip_y: false,
+            scale: serde_json::json!(1.0),
+            alpha: 1.0,
+            dance_every: 0.0,
+            scroll: [1.0, 1.0],
+            animations: vec![StagePropAnimationData {
+                name: "throw".to_owned(),
+                prefix: "knife toss0".to_owned(),
+                flip_x: false,
+                flip_y: false,
+                frame_rate: 24,
+                looped: false,
+                frame_indices: Vec::new(),
+                offsets: [0.0, 0.0],
+                asset_path: None,
+            }],
+            starting_animation: None,
+            anim_type: "sparrow".to_owned(),
+            angle: 0.0,
+            blend: String::new(),
+            color: "#FFFFFF".to_owned(),
+        };
+        let mut prop = StageProp::from_data(&prop_data, assets, gpu);
+        prop.visible = false;
+        self.game_over_nene_toss = Some(prop);
     }
 
     /// Resets scene state for song restart or difficulty reload without reallocating pools.
@@ -314,18 +384,41 @@ impl PlayScene {
         self.scripts.reset(self.stage.as_mut());
         if let Some(player) = &mut self.bf {
             player.is_dead = false;
+            player.can_play_other_anims = true;
+            player.visible = true;
+            if self.stage.as_ref().is_some_and(|s| s.id.eq_ignore_ascii_case("phillyBlazin")) {
+                player.dance_every = 0.0;
+                player.play_animation("idle", true, false);
+                player.z_index = 2000;
+            }
+        }
+        if let Some(dad) = &mut self.dad {
+            if self.stage.as_ref().is_some_and(|s| s.id.eq_ignore_ascii_case("phillyBlazin")) {
+                dad.dance_every = 0.0;
+                dad.play_animation("idle", true, false);
+                dad.z_index = 2000;
+            }
+        }
+        if let Some(nene) = &mut self.game_over_nene_toss {
+            nene.visible = false;
         }
 
         let stage_zoom = self.stage.as_ref().map_or(DEFAULT_STAGE_ZOOM, |s| s.camera_zoom);
         self.camera_rig.cam_game.default_zoom = stage_zoom;
         self.camera_rig.cam_game.follow_lerp = DEFAULT_CAMERA_FOLLOW_RATE;
         self.camera_rig.reset();
-        let focus = initial_camera_focus(self.bf.as_ref(), self.dad.as_ref(), self.gf.as_ref());
+        let focus = initial_camera_focus_for_stage(
+            self.stage.as_ref().map(|s| s.id.as_str()),
+            self.bf.as_ref(),
+            self.dad.as_ref(),
+            self.gf.as_ref(),
+        );
         self.camera_rig.cam_game.snap_to(focus[0], focus[1]);
 
         self.pause_menu.set_song_info(song_name, difficulty);
         self.pause_menu.close();
         self.game_over.reset();
+        self.game_over.set_pico_explosion_death(false);
         if reset_death_count {
             self.game_over.death_count = 0;
         }
@@ -355,13 +448,37 @@ impl PlayScene {
 
         if self.game_over.phase != GameOverPhase::Inactive {
             inputs.clear();
+            if let Some(nene) = &mut self.game_over_nene_toss {
+                if nene.visible {
+                    nene.update(elapsed_s);
+                    if nene.bopper.as_ref().is_some_and(crate::stage::Bopper::is_finished) {
+                        nene.visible = false;
+                    }
+                }
+            }
             if let Some(bf) = &mut self.bf {
-                let focus = bf.get_death_camera_focus_point();
+                let mut focus = bf.get_death_camera_focus_point();
+                if self.game_over.blue_ball_suffix.as_str() == "-pico-explode" {
+                    focus[0] -= 10.0;
+                    focus[1] -= 140.0;
+                }
                 self.camera_rig.cam_game.set_target(focus[0], focus[1]);
                 let confirm_phase = matches!(
                     self.game_over.phase,
                     GameOverPhase::ConfirmRetry | GameOverPhase::Exiting
                 );
+                if self.game_over.phase == GameOverPhase::FirstDeath
+                    && self.game_over.is_pico
+                    && !self.game_over.is_pixel
+                    && self.game_over.blue_ball_suffix.as_str() != "-pico-explode"
+                    && self.game_over.blue_ball_suffix.as_str() != "-pico-gutpunch"
+                    && bf.current_animation() == "firstDeath"
+                    && bf.current_frame_index() >= 35
+                {
+                    if let Some(cue) = self.game_over.enter_death_loop() {
+                        out.game_over_events.audio_cue = Some(cue);
+                    }
+                }
                 let target_anim = match self.game_over.phase {
                     GameOverPhase::FirstDeath => "firstDeath",
                     GameOverPhase::DeathLoop => "deathLoop",
@@ -378,15 +495,17 @@ impl PlayScene {
                     }
                     GameOverPhase::Inactive => "firstDeath",
                 };
-                if confirm_phase
-                    && bf.current_animation() != "deathConfirm"
-                    && bf.current_animation() != "deathConfirm-loop"
-                {
-                    let stage_zoom = self.stage.as_ref().map_or(DEFAULT_STAGE_ZOOM, |s| s.camera_zoom);
-                    self.camera_rig.cam_game.tween_zoom(stage_zoom, 0.5, FlxEase::QuadOut);
+                if confirm_phase {
+                    bf.can_play_other_anims = true;
+                    if bf.current_animation() != "deathConfirm"
+                        && bf.current_animation() != "deathConfirm-loop"
+                    {
+                        let stage_zoom = self.stage.as_ref().map_or(DEFAULT_STAGE_ZOOM, |s| s.camera_zoom);
+                        self.camera_rig.cam_game.tween_zoom(stage_zoom, 0.5, FlxEase::QuadOut);
+                    }
                 }
                 if bf.current_animation() != target_anim && bf.has_animation(target_anim) {
-                    bf.play_animation(target_anim, true, true);
+                    bf.play_animation(target_anim, true, false);
                 }
                 bf.update(elapsed_s, self.session.conductor.beat_length_ms(), false);
             }
@@ -451,6 +570,7 @@ impl PlayScene {
             raw_song_pos_ms
         };
 
+        self.session.can_fire_gun = self.scripts.can_fire_gun();
         let gameplay = self.session.update(
             effective_song_pos_ms,
             elapsed_s,
@@ -462,18 +582,65 @@ impl PlayScene {
         out.gameplay = gameplay;
 
         if gameplay.died {
+            let is_explode_death = gameplay.missed_note
+                && self.session.config.is_2hot
+                && gameplay.missed_kind == crate::scripts::NoteKindTag::Weekend1FireGun;
+            let is_blazin_death = self
+                .stage
+                .as_ref()
+                .is_some_and(|s| s.id.eq_ignore_ascii_case("phillyBlazin"));
+            if is_explode_death || (is_blazin_death && (gameplay.missed_note || gameplay.ghost_missed)) {
+                let miss_cues = self.scripts.on_player_miss(
+                    gameplay.missed_dir,
+                    gameplay.missed_kind,
+                    self.bf.as_mut(),
+                    self.dad.as_mut(),
+                    gameplay.ghost_missed && !gameplay.missed_note,
+                    true,
+                );
+                if let Some(ref mut engine) = audio {
+                    for cue in miss_cues.cues.iter().take(miss_cues.count).flatten() {
+                        let _ = engine.send(AudioCommand::PlaySfx {
+                            slot: cue.slot,
+                            gain: cue.gain,
+                        });
+                    }
+                }
+                if is_explode_death {
+                    self.game_over.set_pico_explosion_death(true);
+                }
+            }
             self.session.is_paused = true;
             if let Some(bf) = &mut self.bf {
+                bf.can_play_other_anims = true;
                 bf.is_dead = true;
-                bf.play_animation("firstDeath", true, true);
-                let focus = bf.get_death_camera_focus_point();
+                if is_explode_death && bf.has_animation("firstDeath-explosion") {
+                    bf.play_animation("firstDeath-explosion", true, false);
+                } else {
+                    bf.play_animation("firstDeath", true, false);
+                }
+                let mut focus = bf.get_death_camera_focus_point();
                 let stage_zoom = self.stage.as_ref().map_or(DEFAULT_STAGE_ZOOM, |s| s.camera_zoom);
-                let target_zoom = stage_zoom * bf.death_camera_zoom();
+                let target_zoom = if is_explode_death {
+                    focus[0] -= 10.0;
+                    focus[1] -= 140.0;
+                    stage_zoom
+                } else {
+                    stage_zoom * bf.death_camera_zoom()
+                };
                 self.camera_rig.cam_game.follow_lerp = DEFAULT_CAMERA_FOLLOW_RATE * 0.5;
                 self.camera_rig.cam_game.set_target(focus[0], focus[1]);
                 self.camera_rig.cam_game.tween_zoom(target_zoom, 0.5, FlxEase::QuadOut);
             }
             out.game_over_events = self.game_over.trigger_death();
+            if self.game_over.blue_ball_suffix.as_str() != "-pico-explode" {
+                if let Some(nene) = &mut self.game_over_nene_toss {
+                    nene.visible = true;
+                    if let Some(bop) = &mut nene.bopper {
+                        bop.play_animation("throw", true);
+                    }
+                }
+            }
             return out;
         }
 
@@ -555,17 +722,45 @@ impl PlayScene {
         }
 
         if let Some(dir) = gameplay.player_hit_dir {
-            self.scripts.on_note_hit(
+            let cues = self.scripts.on_note_hit(
                 true,
                 dir,
                 gameplay.player_hit_kind,
                 self.bf.as_mut(),
+                self.dad.as_mut(),
+                gameplay.last_judgement,
+                self.session.health,
                 self.stage.as_ref(),
             );
+            if let Some([intensity, dur]) = cues.camera_shake {
+                self.camera_rig.cam_game.shake(intensity, dur);
+            }
+            if let Some(ref mut engine) = audio {
+                for cue in cues.cues.iter().take(cues.count).flatten() {
+                    let _ = engine.send(AudioCommand::PlaySfx {
+                        slot: cue.slot,
+                        gain: cue.gain,
+                    });
+                }
+            }
         } else if gameplay.missed_note || gameplay.ghost_missed {
-            if let Some(dir) = gameplay.missed_dir {
-                if let Some(bf) = &mut self.bf {
-                    bf.play_sing_animation(dir, true, "");
+            let cues = self.scripts.on_player_miss(
+                gameplay.missed_dir,
+                gameplay.missed_kind,
+                self.bf.as_mut(),
+                self.dad.as_mut(),
+                gameplay.ghost_missed && !gameplay.missed_note,
+                false,
+            );
+            if let Some([intensity, dur]) = cues.camera_shake {
+                self.camera_rig.cam_game.shake(intensity, dur);
+            }
+            if let Some(ref mut engine) = audio {
+                for cue in cues.cues.iter().take(cues.count).flatten() {
+                    let _ = engine.send(AudioCommand::PlaySfx {
+                        slot: cue.slot,
+                        gain: cue.gain,
+                    });
                 }
             }
         }
@@ -582,11 +777,14 @@ impl PlayScene {
         }
 
         if let Some(dir) = gameplay.opponent_hit_dir {
-            self.scripts.on_note_hit(
+            let _ = self.scripts.on_note_hit(
                 false,
                 dir,
                 gameplay.opponent_hit_kind,
                 self.dad.as_mut(),
+                None,
+                None,
+                self.session.health,
                 self.stage.as_ref(),
             );
         }
@@ -619,8 +817,10 @@ impl PlayScene {
                 if let Some(dad) = &mut self.dad {
                     dad.on_step_hit(cur_step, false);
                 }
-                if let Some(gf) = &mut self.gf {
-                    gf.on_step_hit(cur_step, false);
+                if !self.scripts.owns_gf_dance() {
+                    if let Some(gf) = &mut self.gf {
+                        gf.on_step_hit(cur_step, false);
+                    }
                 }
                 self.icon_p1.on_step_hit(cur_step);
                 self.icon_p2.on_step_hit(cur_step);
@@ -744,6 +944,11 @@ impl PlayScene {
         let hud_zoom = self.camera_rig.cam_hud.effective_zoom();
 
         if self.game_over.phase != GameOverPhase::Inactive {
+            if let Some(nene) = &self.game_over_nene_toss {
+                if nene.visible {
+                    nene.draw(stage_sprites, cam_pos, cam_zoom, hud_zoom);
+                }
+            }
             if let Some(bf) = &self.bf {
                 bf.draw(stage_sprites, cam_pos, cam_zoom);
             }
@@ -949,11 +1154,18 @@ fn draw_optional_chars_sorted(
     }
 }
 
-fn initial_camera_focus(
+fn initial_camera_focus_for_stage(
+    stage_id: Option<&str>,
     bf: Option<&BaseCharacter>,
     dad: Option<&BaseCharacter>,
     gf: Option<&BaseCharacter>,
 ) -> [f32; 2] {
+    if stage_id.is_some_and(|s| s.eq_ignore_ascii_case("phillyBlazin")) {
+        if let Some(g) = gf {
+            let pt = g.get_camera_focus_point();
+            return [pt[0] + 50.0, pt[1] - 90.0];
+        }
+    }
     dad.or(gf)
         .or(bf)
         .map_or([VIRTUAL_WIDTH * 0.5, VIRTUAL_HEIGHT * 0.5], BaseCharacter::get_camera_focus_point)

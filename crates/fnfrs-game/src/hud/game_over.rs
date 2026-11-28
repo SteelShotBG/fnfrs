@@ -135,6 +135,14 @@ impl GameOverState {
             ("-pixel-pico", "-pixel-pico", "breakfast-pixel", 1.5, DeathQuoteKind::None)
         } else if bf == "bf-pixel" || bf_is_pixel {
             ("-pixel", "-pixel", "breakfast-pixel", 2.0, DeathQuoteKind::None)
+        } else if bf == "pico-blazin" {
+            (
+                "-pico",
+                "-pico-gutpunch",
+                "breakfast-pico",
+                1.25,
+                DeathQuoteKind::None,
+            )
         } else if bf == "pico-holding-nene" {
             (
                 "-pico",
@@ -176,6 +184,48 @@ impl GameOverState {
         GameOverEvents {
             audio_cue: Some(GameOverAudioCue::PlayLossSfx),
             action: GameOverAction::None,
+        }
+    }
+
+    /// Switches Pico between normal `-pico` death and `2hot` exploding `-pico-explode` death.
+    pub fn set_pico_explosion_death(&mut self, explode: bool) {
+        if explode {
+            self.suffix.clear();
+            self.blue_ball_suffix.clear();
+            let _ = self.blue_ball_suffix.write_str("-pico-explode");
+            self.first_death_duration_s = 3.0;
+        } else if self.is_pico && !self.is_pixel {
+            self.suffix.clear();
+            let _ = self.suffix.write_str("-pico");
+            self.blue_ball_suffix.clear();
+            let _ = self.blue_ball_suffix.write_str(if self.quote_kind == DeathQuoteKind::PicoHoldingNene {
+                "-pico-and-nene"
+            } else {
+                "-pico"
+            });
+            self.first_death_duration_s = if self.quote_kind == DeathQuoteKind::PicoHoldingNene {
+                2.08
+            } else {
+                2.0
+            };
+        }
+    }
+
+    /// Transitions immediately from `FirstDeath` to `DeathLoop` (e.g. Pico frame 35).
+    pub fn enter_death_loop(&mut self) -> Option<GameOverAudioCue> {
+        if self.phase != GameOverPhase::FirstDeath {
+            return None;
+        }
+        self.phase = GameOverPhase::DeathLoop;
+        self.can_input = true;
+        if self.quote_kind != DeathQuoteKind::None {
+            self.quote_active = true;
+            self.quote_restore_timer_s = 0.0;
+            Some(GameOverAudioCue::StartGameOverLoopQuietWithQuote(
+                self.quote_kind,
+            ))
+        } else {
+            Some(GameOverAudioCue::StartGameOverLoop)
         }
     }
 

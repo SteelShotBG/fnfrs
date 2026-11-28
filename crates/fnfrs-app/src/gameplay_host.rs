@@ -46,6 +46,7 @@ pub(crate) struct ActiveGameplay {
     pub song_audio_replaced: bool,
     pub song_duration_ms: Option<f64>,
     pub game_over_loss_sfx_slot: Option<usize>,
+    pub game_over_loss_explode_sfx_slot: Option<usize>,
     pub cutscene: CutsceneController,
     pub cutscene_sfx: CutsceneSfxSlots,
     pub waiting_post_cutscene: bool,
@@ -138,6 +139,7 @@ pub(crate) fn build_active_gameplay(
     let mut sfx_slots = GameplaySfxSlots::default();
     let mut script_sfx_slots = ScriptSfxSlots::default();
     let mut game_over_loss_sfx_slot = None;
+    let mut game_over_loss_explode_sfx_slot = None;
     let mut cutscene_sfx = CutsceneSfxSlots::default();
 
     if let Some(engine) = audio.as_deref_mut() {
@@ -151,11 +153,12 @@ pub(crate) fn build_active_gameplay(
         }
         let mut go_profile = GameOverState::new();
         go_profile.set_character_profile(bf_id, dad_id, bf_is_pixel);
-        let (miss_slots, loss_slot, script_slots, tray_slots, cs_slots) = register_all_sfx(
+        let (miss_slots, loss_slot, explode_slot, script_slots, cs_slots) = register_all_sfx(
             &level_assets,
             engine,
             sample_rate,
             &mut countdown_assets,
+            menu_sfx,
             go_profile.blue_ball_suffix.as_str(),
             loaded_chart.song_id.as_str(),
             stage_id,
@@ -164,17 +167,16 @@ pub(crate) fn build_active_gameplay(
         );
         sfx_slots = miss_slots;
         game_over_loss_sfx_slot = loss_slot;
+        game_over_loss_explode_sfx_slot = explode_slot;
         script_sfx_slots = script_slots;
         cutscene_sfx = cs_slots;
-        menu_sfx.vol_up = tray_slots.0;
-        menu_sfx.vol_down = tray_slots.1;
-        menu_sfx.vol_max = tray_slots.2;
     }
 
     let initial_config = PlayConfig {
         scroll_speed: 0.0,
         is_downscroll: opts.downscroll,
         is_botplay: opts.botplay,
+        is_2hot: loaded_chart.song_id.eq_ignore_ascii_case("2hot"),
         ..PlayConfig::default()
     };
     let mut session = create_session(&loaded_chart, initial_config);
@@ -220,6 +222,7 @@ pub(crate) fn build_active_gameplay(
     if let Some((_, sz)) = note_assets.health_bar_tex {
         scene.set_health_bar_size(sz[0], sz[1]);
     }
+    scene.load_game_over_extras(&level_assets, gpu, bf_id, bf_is_pixel);
     preload_event_icons(&level_assets, gpu, &mut scene, bf_is_pixel, dad_is_pixel);
     let picospeaker_notes = loaded_chart
         .chart
@@ -267,6 +270,7 @@ pub(crate) fn build_active_gameplay(
         opts.naughtyness,
         &level_assets,
         gpu,
+        audio.as_deref_mut(),
         opts.master_volume,
         &mut scene,
     );
@@ -294,6 +298,7 @@ pub(crate) fn build_active_gameplay(
         song_audio_replaced: false,
         song_duration_ms: effective_duration_ms,
         game_over_loss_sfx_slot,
+        game_over_loss_explode_sfx_slot,
         cutscene,
         cutscene_sfx,
         waiting_post_cutscene: false,
@@ -446,6 +451,7 @@ pub(crate) fn update_and_render_gameplay(
                     gp.cutscene.set_paused(false);
                     if let Some(engine) = audio.as_deref_mut() {
                         let _ = engine.set_bg_loop_paused(false);
+                        let _ = engine.set_video_audio_paused(false);
                     }
                 } else {
                     gp.scene.session.is_paused = false;
@@ -490,6 +496,7 @@ pub(crate) fn update_and_render_gameplay(
             PauseMenuAction::SkipCutscene | PauseMenuAction::SkipDialogue => {
                 if let Some(engine) = audio.as_deref_mut() {
                     let _ = engine.stop_pause_loop();
+                    let _ = engine.detach_video_audio();
                 }
                 let mut q = CutsceneAudioQueue::default();
                 if gp.cutscene.skip_active(&mut q) {
@@ -508,6 +515,7 @@ pub(crate) fn update_and_render_gameplay(
                 if let Some(engine) = audio.as_deref_mut() {
                     let _ = engine.stop_pause_loop();
                     let _ = engine.set_bg_loop_paused(false);
+                    let _ = engine.set_video_audio_paused(false);
                 }
                 let mut q = CutsceneAudioQueue::default();
                 gp.cutscene.restart_active(&mut q);
@@ -517,6 +525,7 @@ pub(crate) fn update_and_render_gameplay(
                 if let Some(engine) = audio.as_deref_mut() {
                     let _ = engine.stop_pause_loop();
                     let _ = engine.stop_bg_loop();
+                    let _ = engine.detach_video_audio();
                 }
                 gp.cutscene.set_paused(false);
                 return_to_menu(state, audio, event_loop);
@@ -543,6 +552,9 @@ pub(crate) fn update_and_render_gameplay(
             }
         }
         if step.finished {
+            if let Some(engine) = audio.as_deref_mut() {
+                let _ = engine.detach_video_audio();
+            }
             if gp.waiting_post_cutscene {
                 gp.waiting_post_cutscene = false;
                 finish_song_now = true;
@@ -680,6 +692,7 @@ pub(crate) fn update_and_render_gameplay(
             state.return_target == ReturnTarget::StoryMenu,
             &gp.level_assets,
             &mut state.gpu,
+            audio.as_deref_mut(),
             state.sound_tray.effective_volume(),
             &mut gp.scene,
         );

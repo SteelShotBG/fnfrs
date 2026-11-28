@@ -134,7 +134,12 @@ pub(crate) fn handle_game_over_audio(
     match cue {
         GameOverAudioCue::PlayLossSfx => {
             let _ = engine.pause();
-            if let Some(slot) = gp.game_over_loss_sfx_slot {
+            let slot = if gp.scene.game_over.blue_ball_suffix.as_str() == "-pico-explode" {
+                gp.game_over_loss_explode_sfx_slot.or(gp.game_over_loss_sfx_slot)
+            } else {
+                gp.game_over_loss_sfx_slot
+            };
+            if let Some(slot) = slot {
                 let _ = engine.play_sfx(slot, 1.0);
             }
         }
@@ -249,6 +254,7 @@ pub(crate) fn register_all_sfx(
     engine: &mut AudioEngine,
     sample_rate: u32,
     countdown_assets: &mut CountdownAssets,
+    menu_sfx: &mut MenuSfxSlots,
     blue_ball_suffix: &str,
     song_id: &str,
     stage_id: &str,
@@ -257,8 +263,8 @@ pub(crate) fn register_all_sfx(
 ) -> (
     GameplaySfxSlots,
     Option<usize>,
+    Option<usize>,
     ScriptSfxSlots,
-    (Option<usize>, Option<usize>, Option<usize>),
     CutsceneSfxSlots,
 ) {
     let mut bank = Vec::with_capacity(24);
@@ -317,6 +323,15 @@ pub(crate) fn register_all_sfx(
         }
     }
 
+    let mut loss_explode_slot = None;
+    if song_id.eq_ignore_ascii_case("2hot") {
+        let explode_path = assets.sound("gameplay/gameover/fnf_loss_sfx-pico-explode");
+        if let Ok(decoded) = decode_file(&explode_path, sample_rate) {
+            loss_explode_slot = Some(bank.len());
+            bank.push(decoded);
+        }
+    }
+
     let stage_lower = stage_id.to_ascii_lowercase();
     if stage_lower == "spookymansion" || stage_lower == "spookymansionerect" {
         for (idx, key) in ["thunder_1", "thunder_2"].iter().enumerate() {
@@ -358,13 +373,31 @@ pub(crate) fn register_all_sfx(
                 bank.push(audio);
             }
         }
+        if stage_lower.starts_with("phillystreets") || song_id.eq_ignore_ascii_case("2hot") {
+            if let Ok(decoded) = decode_file(&assets.sound("Gun_Prep"), sample_rate) {
+                script_slots.gun_prep = Some(bank.len());
+                bank.push(decoded);
+            }
+            if let Ok(decoded) = decode_file(&assets.sound("Pico_Bonk"), sample_rate) {
+                script_slots.pico_bonk = Some(bank.len());
+                bank.push(decoded);
+            }
+            for (idx, key) in ["shot1", "shot2", "shot3", "shot4"].iter().enumerate() {
+                if let Ok(decoded) = decode_file(&assets.sound(key), sample_rate) {
+                    script_slots.shot[idx] = Some(bank.len());
+                    bank.push(decoded);
+                }
+            }
+        }
     }
 
-    let mut tray_slots = (None, None, None);
     for (slot_ref, key) in [
-        (&mut tray_slots.0, "soundtray/Volup"),
-        (&mut tray_slots.1, "soundtray/Voldown"),
-        (&mut tray_slots.2, "soundtray/VolMAX"),
+        (&mut menu_sfx.scroll, "scrollMenu"),
+        (&mut menu_sfx.confirm, "confirmMenu"),
+        (&mut menu_sfx.cancel, "cancelMenu"),
+        (&mut menu_sfx.vol_up, "soundtray/Volup"),
+        (&mut menu_sfx.vol_down, "soundtray/Voldown"),
+        (&mut menu_sfx.vol_max, "soundtray/VolMAX"),
     ] {
         let path = assets.sound(key);
         if let Ok(decoded) = decode_file(&path, sample_rate) {
@@ -459,7 +492,7 @@ pub(crate) fn register_all_sfx(
     if !bank.is_empty() {
         let _ = engine.register_sfx_bank(bank);
     }
-    (slots, loss_slot, script_slots, tray_slots, cs_slots)
+    (slots, loss_slot, loss_explode_slot, script_slots, cs_slots)
 }
 
 pub(crate) fn dispatch_cutscene_audio(

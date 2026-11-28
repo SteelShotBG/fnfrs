@@ -7,6 +7,7 @@ pub mod philly_doppel;
 pub mod sserafim_intro;
 pub mod stress_pico;
 
+use fnfrs_audio::AudioEngine;
 use fnfrs_core::constants::{VIRTUAL_HEIGHT, VIRTUAL_WIDTH};
 use fnfrs_core::paths::AssetLocator;
 use fnfrs_render::{
@@ -160,6 +161,7 @@ impl CutsceneController {
         naughtyness: bool,
         assets: &AssetLocator,
         gpu: &mut GpuContext,
+        mut audio: Option<&mut AudioEngine>,
         volume: f32,
         scene: &mut PlayScene,
     ) -> CutsceneAudioQueue {
@@ -267,7 +269,8 @@ impl CutsceneController {
             } else {
                 "stressPicoCutscene-censored"
             };
-            if let Some(vid) = VideoCutsceneState::open(key, assets, gpu, volume) {
+            if let Some(vid) = VideoCutsceneState::open(key, assets, gpu, audio.as_deref_mut(), volume)
+            {
                 self.kind = Some(ActiveCutsceneKind::Video {
                     vid: Box::new(vid),
                     chain_darnell_ingame: false,
@@ -295,9 +298,12 @@ impl CutsceneController {
             };
             if let Some(key) = video_key {
                 let fallback_key = (song == "darnell").then_some("darnellCutscene");
-                let vid = VideoCutsceneState::open(key, assets, gpu, volume).or_else(|| {
-                    fallback_key.and_then(|k| VideoCutsceneState::open(k, assets, gpu, volume))
-                });
+                let vid = match VideoCutsceneState::open(key, assets, gpu, audio.as_deref_mut(), volume)
+                {
+                    Some(v) => Some(v),
+                    None => fallback_key
+                        .and_then(|k| VideoCutsceneState::open(k, assets, gpu, audio, volume)),
+                };
                 if let Some(vid) = vid {
                     self.kind = Some(ActiveCutsceneKind::Video {
                         vid: Box::new(vid),
@@ -326,6 +332,7 @@ impl CutsceneController {
         is_story_mode: bool,
         assets: &AssetLocator,
         gpu: &mut GpuContext,
+        audio: Option<&mut AudioEngine>,
         volume: f32,
         scene: &mut PlayScene,
     ) -> CutsceneAudioQueue {
@@ -360,7 +367,7 @@ impl CutsceneController {
                 _ => None,
             };
             if let Some(key) = video_key {
-                if let Some(vid) = VideoCutsceneState::open(key, assets, gpu, volume) {
+                if let Some(vid) = VideoCutsceneState::open(key, assets, gpu, audio, volume) {
                     self.kind = Some(ActiveCutsceneKind::Video {
                         vid: Box::new(vid),
                         chain_darnell_ingame: false,

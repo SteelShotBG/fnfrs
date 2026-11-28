@@ -236,6 +236,13 @@ impl Bopper {
             self.can_play_other_anims = true;
         }
     }
+
+    /// Returns `true` when the active non-looping animation has reached its end frame.
+    #[inline]
+    #[must_use]
+    pub fn is_finished(&self) -> bool {
+        self.bank.finished
+    }
 }
 
 #[derive(Debug)]

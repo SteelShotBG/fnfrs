@@ -6,6 +6,7 @@
 use std::fmt::Write as _;
 use std::fs;
 
+use fnfrs_audio::{AudioEngine, VideoAudioProducer};
 use fnfrs_core::constants::{VIRTUAL_HEIGHT, VIRTUAL_WIDTH};
 use fnfrs_core::paths::AssetLocator;
 use fnfrs_render::{
@@ -94,7 +95,10 @@ mod win32_vlc {
         fn LoadLibraryW(lpLibFileName: *const u16) -> *mut c_void;
         fn FreeLibrary(hLibModule: *mut c_void) -> c_int;
         fn GetProcAddress(hModule: *mut c_void, lpProcName: *const c_char) -> *const c_void;
+        fn SetEnvironmentVariableW(lpName: *const u16, lpValue: *const u16) -> c_int;
     }
+
+    use super::{AudioEngine, VideoAudioProducer};
 
     type FnLibVlcNew = unsafe extern "C" fn(c_int, *const *const c_char) -> *mut c_void;
     type FnLibVlcRelease = unsafe extern "C" fn(*mut c_void);
@@ -108,6 +112,7 @@ mod win32_vlc {
     type FnMpSetTime = unsafe extern "C" fn(*mut c_void, i64);
     type FnMpGetState = unsafe extern "C" fn(*mut c_void) -> c_int;
     type FnMpSetVol = unsafe extern "C" fn(*mut c_void, c_int) -> c_int;
+    type FnAudioSetMute = unsafe extern "C" fn(*mut c_void, c_int);
     type FnVideoSetCallbacks = unsafe extern "C" fn(
         *mut c_void,
         Option<unsafe extern "C" fn(*mut c_void, *mut *mut c_void) -> *mut c_void>,
@@ -117,6 +122,43 @@ mod win32_vlc {
     );
     type FnVideoSetFormat =
         unsafe extern "C" fn(*mut c_void, *const c_char, c_uint, c_uint, c_uint);
+    type FnAudioPlayCb = unsafe extern "C" fn(*mut c_void, *const c_void, c_uint, i64);
+    type FnAudioPauseCb = unsafe extern "C" fn(*mut c_void, i64);
+    type FnAudioResumeCb = unsafe extern "C" fn(*mut c_void, i64);
+    type FnAudioFlushCb = unsafe extern "C" fn(*mut c_void, i64);
+    type FnAudioDrainCb = unsafe extern "C" fn(*mut c_void);
+    type FnAudioSetCallbacks = unsafe extern "C" fn(
+        *mut c_void,
+        Option<FnAudioPlayCb>,
+        Option<FnAudioPauseCb>,
+        Option<FnAudioResumeCb>,
+        Option<FnAudioFlushCb>,
+        Option<FnAudioDrainCb>,
+        *mut c_void,
+    );
+    type FnAudioSetFormat =
+        unsafe extern "C" fn(*mut c_void, *const c_char, c_uint, c_uint);
+
+    pub struct SharedAudioBridge {
+        producer: Mutex<VideoAudioProducer>,
+    }
+
+    unsafe extern "C" fn vlc_audio_play(
+        opaque: *mut c_void,
+        samples: *const c_void,
+        count: c_uint,
+        _pts: i64,
+    ) {
+        if opaque.is_null() || samples.is_null() || count == 0 {
+            return;
+        }
+        let bridge = &*(opaque as *const SharedAudioBridge);
+        let len = (count as usize).saturating_mul(2);
+        let pcm = std::slice::from_raw_parts(samples as *const i16, len);
+        if let Ok(mut guard) = bridge.producer.lock() {
+            guard.push_s16n_stereo(pcm);
+        }
+    }
 
     pub struct SharedVideoFrame {
         #[allow(dead_code)]
@@ -223,6 +265,7 @@ mod win32_vlc {
         fn_mp_set_vol: Option<FnMpSetVol>,
         fn_vlc_release: FnLibVlcRelease,
         pub shared: Arc<SharedVideoFrame>,
+        _audio_bridge: Option<Arc<SharedAudioBridge>>,
     }
 
     impl std::fmt::Debug for VlcPlayerHandle {
@@ -234,7 +277,12 @@ mod win32_vlc {
     }
 
     impl VlcPlayerHandle {
-        pub fn open(video_path: &Path, assets_root: &Path, volume: f32) -> Option<Self> {
+        pub fn open(
+            video_path: &Path,
+            assets_root: &Path,
+            audio: Option<&mut AudioEngine>,
+            volume: f32,
+        ) -> Option<Self> {
             if !video_path.exists() {
                 return None;
             }
@@ -245,6 +293,20 @@ mod win32_vlc {
             for dir in &dirs {
                 let candidate = dir.join("libvlc.dll");
                 if candidate.exists() {
+                    let p = dir.join("plugins");
+                    if p.exists() {
+                        let env_key: Vec<u16> = "VLC_PLUGIN_PATH\0".encode_utf16().collect();
+                        let env_val: Vec<u16> = p
+                            .as_os_str()
+                            .to_string_lossy()
+                            .encode_utf16()
+                            .chain(std::iter::once(0))
+                            .collect();
+                        unsafe {
+                            SetEnvironmentVariableW(env_key.as_ptr(), env_val.as_ptr());
+                        }
+                        plugin_dir = Some(p);
+                    }
                     let wide: Vec<u16> = candidate
                         .as_os_str()
                         .to_string_lossy()
@@ -255,10 +317,6 @@ mod win32_vlc {
                     let m = unsafe { LoadLibraryW(wide.as_ptr()) };
                     if !m.is_null() {
                         loaded_dll = m;
-                        let p = dir.join("plugins");
-                        if p.exists() {
-                            plugin_dir = Some(p);
-                        }
                         break;
                     }
                 }
@@ -305,6 +363,12 @@ mod win32_vlc {
                 load_proc(loaded_dll, b"libvlc_media_player_get_state\0")?;
             let fn_mp_set_vol: Option<FnMpSetVol> =
                 load_proc(loaded_dll, b"libvlc_audio_set_volume\0");
+            let fn_audio_set_mute: Option<FnAudioSetMute> =
+                load_proc(loaded_dll, b"libvlc_audio_set_mute\0");
+            let fn_audio_set_cb: Option<FnAudioSetCallbacks> =
+                load_proc(loaded_dll, b"libvlc_audio_set_callbacks\0");
+            let fn_audio_set_fmt: Option<FnAudioSetFormat> =
+                load_proc(loaded_dll, b"libvlc_audio_set_format\0");
             let fn_set_cb: FnVideoSetCallbacks =
                 load_proc(loaded_dll, b"libvlc_video_set_callbacks\0")?;
             let fn_set_fmt: FnVideoSetFormat =
@@ -362,6 +426,26 @@ mod win32_vlc {
                 VIDEO_FRAME_WIDTH,
                 VIDEO_FRAME_HEIGHT,
             ));
+            let audio_bridge = if let (Some(set_cb), Some(set_fmt), Some(engine)) =
+                (fn_audio_set_cb, fn_audio_set_fmt, audio)
+            {
+                if let Some((producer, sample_rate)) = engine.attach_video_audio() {
+                    let bridge = Arc::new(SharedAudioBridge {
+                        producer: Mutex::new(producer),
+                    });
+                    let audio_opaque = Arc::as_ptr(&bridge) as *mut c_void;
+                    unsafe {
+                        set_cb(mp, Some(vlc_audio_play), None, None, None, None, audio_opaque);
+                        set_fmt(mp, c"S16N".as_ptr(), sample_rate as c_uint, 2);
+                    }
+                    Some(bridge)
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+
             let opaque = Arc::as_ptr(&shared) as *mut c_void;
             unsafe {
                 fn_set_cb(
@@ -378,6 +462,9 @@ mod win32_vlc {
                     VIDEO_FRAME_HEIGHT,
                     VIDEO_FRAME_WIDTH * 4,
                 );
+                if let Some(sm) = fn_audio_set_mute {
+                    sm(mp, 0);
+                }
                 if let Some(sv) = fn_mp_set_vol {
                     sv(mp, (volume.clamp(0.0, 1.0) * 100.0).round() as c_int);
                 }
@@ -402,6 +489,7 @@ mod win32_vlc {
                 fn_mp_set_vol,
                 fn_vlc_release,
                 shared,
+                _audio_bridge: audio_bridge,
             })
         }
 
@@ -477,6 +565,7 @@ impl VideoCutsceneState {
         video_key: &str,
         assets: &AssetLocator,
         gpu: &mut GpuContext,
+        audio: Option<&mut AudioEngine>,
         volume: f32,
     ) -> Option<Self> {
         let video_path = assets.video(video_key);
@@ -490,10 +579,10 @@ impl VideoCutsceneState {
             .unwrap_or_default();
 
         #[cfg(target_os = "windows")]
-        let vlc = win32_vlc::VlcPlayerHandle::open(&video_path, assets.root(), volume)?;
+        let vlc = win32_vlc::VlcPlayerHandle::open(&video_path, assets.root(), audio, volume)?;
         #[cfg(not(target_os = "windows"))]
         {
-            let _ = volume;
+            let _ = (audio, volume);
             return None;
         }
 

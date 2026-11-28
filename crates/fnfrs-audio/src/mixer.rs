@@ -139,6 +139,9 @@ pub enum AudioCommand {
     StartPauseLoop(Box<DecodedAudio>),
     StopPauseLoop,
     SetPauseLoopGain(f32),
+    AttachVideoAudio(Box<VideoAudioConsumer>),
+    DetachVideoAudio,
+    SetVideoAudioPaused(bool),
 }
 
 /// Replaced buffers returned to the main thread so the audio callback never deallocates.
@@ -147,6 +150,33 @@ pub enum RetiredResource {
     Stream(Box<StreamAudioSink>),
     Sfx(Box<SfxBank>),
     Audio(Box<DecodedAudio>),
+    VideoAudio(Box<VideoAudioConsumer>),
+}
+
+/// Lock-free consumer side of streamed video cutscene stereo PCM frames (`MixerState` thread).
+pub struct VideoAudioConsumer {
+    rx: Consumer<[f32; 2]>,
+}
+
+/// Producer side fed from VLC's `amem` decode callback on the video audio thread.
+pub struct VideoAudioProducer {
+    tx: Producer<[f32; 2]>,
+}
+
+impl VideoAudioProducer {
+    /// Converts interleaved stereo signed 16-bit (`S16N`) PCM samples into `[f32; 2]` frames
+    /// and pushes as many as fit into the lock-free ring buffer.
+    #[inline]
+    pub fn push_s16n_stereo(&mut self, samples: &[i16]) {
+        const INV_I16: f32 = 1.0 / 32768.0;
+        for pair in samples.chunks_exact(2) {
+            let l = f32::from(pair[0]) * INV_I16;
+            let r = f32::from(pair[1]) * INV_I16;
+            if self.tx.push([l, r]).is_err() {
+                break;
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -184,6 +214,8 @@ pub struct MixerState {
     pause_loop: Option<Box<DecodedAudio>>,
     pause_loop_cursor: usize,
     pause_loop_gain: f32,
+    video_audio: Option<Box<VideoAudioConsumer>>,
+    video_audio_paused: bool,
 }
 
 impl MixerState {
@@ -217,6 +249,8 @@ impl MixerState {
             pause_loop: None,
             pause_loop_cursor: 0,
             pause_loop_gain: 0.0,
+            video_audio: None,
+            video_audio_paused: false,
         }
     }
 
@@ -363,6 +397,21 @@ impl MixerState {
                 AudioCommand::SetPauseLoopGain(gain) => {
                     self.pause_loop_gain = gain.clamp(0.0, 1.5);
                 }
+                AudioCommand::AttachVideoAudio(consumer) => {
+                    self.video_audio_paused = false;
+                    if let Some(old) = self.video_audio.replace(consumer) {
+                        let _ = self.retired_tx.push(RetiredResource::VideoAudio(old));
+                    }
+                }
+                AudioCommand::DetachVideoAudio => {
+                    self.video_audio_paused = false;
+                    if let Some(old) = self.video_audio.take() {
+                        let _ = self.retired_tx.push(RetiredResource::VideoAudio(old));
+                    }
+                }
+                AudioCommand::SetVideoAudioPaused(paused) => {
+                    self.video_audio_paused = paused;
+                }
             }
         }
 
@@ -437,6 +486,15 @@ impl MixerState {
                     left += l * self.bg_loop_gain;
                     right += r * self.bg_loop_gain;
                     self.bg_loop_cursor = (self.bg_loop_cursor + 1) % bg.frames;
+                }
+            }
+
+            if !self.video_audio_paused {
+                if let Some(vid) = &mut self.video_audio {
+                    if let Ok([l, r]) = vid.rx.pop() {
+                        left += l;
+                        right += r;
+                    }
                 }
             }
 
@@ -697,6 +755,30 @@ impl AudioEngine {
     /// Sets pause menu music gain (used for the `0.0 -> 0.75` 5-second fade-in).
     pub fn set_pause_loop_gain(&mut self, gain: f32) -> Result<(), AudioError> {
         self.send(AudioCommand::SetPauseLoopGain(gain))
+    }
+
+    /// Creates a lock-free stereo ring-buffer stream for video cutscene audio (`libvlc` `amem`).
+    pub fn attach_video_audio(&mut self) -> Option<(VideoAudioProducer, u32)> {
+        let cap = (self.sample_rate.max(8_000) as usize).saturating_mul(4);
+        let (tx, rx) = RingBuffer::<[f32; 2]>::new(cap);
+        if self
+            .send(AudioCommand::AttachVideoAudio(Box::new(VideoAudioConsumer { rx })))
+            .is_ok()
+        {
+            Some((VideoAudioProducer { tx }, self.sample_rate.max(8_000)))
+        } else {
+            None
+        }
+    }
+
+    /// Detaches and retires any active video cutscene audio ring buffer.
+    pub fn detach_video_audio(&mut self) -> Result<(), AudioError> {
+        self.send(AudioCommand::DetachVideoAudio)
+    }
+
+    /// Pauses or resumes video cutscene audio consumption on the mixer thread.
+    pub fn set_video_audio_paused(&mut self, paused: bool) -> Result<(), AudioError> {
+        self.send(AudioCommand::SetVideoAudioPaused(paused))
     }
 }
 

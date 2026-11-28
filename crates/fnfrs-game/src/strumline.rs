@@ -222,6 +222,7 @@ pub struct StrumlineVisualStyle {
     pub cover_hitbox: [f32; 2],
     pub confirm_frames: usize,
     pub splash_frames: usize,
+    pub splash_fps: f32,
     pub cover_start_frames: usize,
     pub cover_loop_frames: usize,
     pub cover_end_frames: usize,
@@ -251,6 +252,7 @@ impl StrumlineVisualStyle {
             cover_hitbox: [300.0, 400.0],
             confirm_frames: 4,
             splash_frames: 4,
+            splash_fps: NOTE_ANIM_FPS,
             cover_start_frames: 3,
             cover_loop_frames: 4,
             cover_end_frames: 3,
@@ -890,7 +892,7 @@ impl Strumline {
         let mut dead_splash_len = 0usize;
         for (handle, splash) in self.splashes.iter_alive_mut() {
             splash.anim_time_s += elapsed_s.max(0.0);
-            let frame = (splash.anim_time_s * NOTE_ANIM_FPS).floor() as usize;
+            let frame = (splash.anim_time_s * style.splash_fps.max(1.0)).floor() as usize;
             if frame >= style.splash_frames.max(1) {
                 splash.visible = false;
                 if dead_splash_len < dead_splashes.len() {
@@ -1097,8 +1099,8 @@ impl Strumline {
                             tex_size,
                             pos: [
                                 note.x - (hitbox_w - STRUMLINE_SIZE) * 0.5 - style.note_nudge
-                                    + na.note_offsets[0],
-                                note.y + na.note_offsets[1],
+                                    - na.note_offsets[0],
+                                note.y - na.note_offsets[1],
                             ],
                             scale: na.note_scale * self.scale,
                             hitbox_size: [hitbox_w, hitbox_h],

@@ -12,7 +12,7 @@ const VIZ_MIN_FREQ: f32 = 10.0;
 const VIZ_MAX_FREQ: f32 = 22000.0;
 const VIZ_MAX_DELTA: f32 = 0.1;
 const VIZ_DB_PER_LN: f32 = 8.685_889;
-const VIZ_FFT_NORM: f32 = (2.0 / VIZ_FFT_N as f32) * (8.0 / 12.0);
+const VIZ_FFT_NORM: f32 = 1.0 / (VIZ_FFT_N as f32);
 
 /// Zero-allocation radix-2 FFT & 7-band logarithmic spectrum analyzer
 /// matching `FunkinCrew/funkVis` (`SpectralAnalyzer` + `ABotVis.hx`).
@@ -46,7 +46,7 @@ impl ABotSpectralAnalyzer {
         let mut twiddle_cos = [0.0_f32; VIZ_HALF_N];
         let mut twiddle_sin = [0.0_f32; VIZ_HALF_N];
         for i in 0..VIZ_FFT_N {
-            window[i] = 1.0 - 0.85 * (2.0 * PI * (i as f32) / (VIZ_FFT_N as f32)).cos();
+            window[i] = 0.5 * (1.0 - (2.0 * PI * (i as f32) / ((VIZ_FFT_N - 1) as f32)).cos());
             bit_rev[i] = (i as u8).reverse_bits();
         }
         for k in 0..VIZ_HALF_N {
@@ -187,11 +187,12 @@ impl ABotSpectralAnalyzer {
             let i_lo = (bin_lo.ceil() as usize).max(1);
             let i_hi = (bin_hi.floor() as usize).min(VIZ_HALF_N - 1);
             if i_lo <= i_hi {
+                let mut sum_sq = 0.0_f32;
+                let count = (i_hi - i_lo + 1) as f32;
                 for &m in &self.mag[i_lo..=i_hi] {
-                    if m > amp {
-                        amp = m;
-                    }
+                    sum_sq += m * m;
                 }
+                amp = (sum_sq / count).sqrt();
             }
 
             let db = if amp > 1e-12 {

@@ -57,7 +57,7 @@ pub(super) struct TankmanRunners {
     shot_frames: [Vec<AtlasFrame>; 2],
     timemap: Vec<(f64, bool)>,
     next_spawn: usize,
-    pool: [TankRunner; 4],
+    pool: [TankRunner; 12],
 }
 
 impl Default for TankmanRunners {

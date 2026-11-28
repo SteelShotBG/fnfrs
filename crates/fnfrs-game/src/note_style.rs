@@ -268,7 +268,8 @@ impl NoteStyleAssets {
         }
     }
 
-    /// Loads `data/notestyles/<style_id>.json` and all available V-Slice sheets from `assets`.
+    /// Loads `data/notestyles/<style_id>.json` and all available V-Slice sheets from `assets`,
+    /// walking `fallback` (`NoteStyle.hx` inheritance chain) for any omitted sections.
     /// Missing files degrade gracefully to `None`.
     pub fn load_from_assets(assets: &AssetLocator, gpu: &mut GpuContext, style_id: &str) -> Self {
         let mut out = Self::empty(style_id);
@@ -278,28 +279,29 @@ impl NoteStyleAssets {
             out.health_bar_tex = Some(tex);
         }
 
-        let json_key = format!("notestyles/{style_id}");
-        let json_path = assets.data_json(&json_key);
-        let Ok(raw_json) = fs::read_to_string(&json_path) else {
+        let Some(chain) = load_style_chain(assets, style_id) else {
             // Try loading standard `funkin` shared sheets directly if JSON missing.
             out.load_default_sheets(assets, gpu);
             return out;
         };
+        let data = &chain[0];
 
-        let Ok(data) = serde_json::from_str::<NoteStyleData>(&raw_json) else {
-            out.load_default_sheets(assets, gpu);
-            return out;
-        };
-
-        // 1. Strumline receptors.
-        if let Some(strum_cfg) = &data.assets.note_strumline {
+        // 1. Strumline receptors (`NoteStyle.hx` + fallback chain).
+        if let Some(strum_cfg) = chain.iter().find_map(|d| d.assets.note_strumline.as_ref()) {
             out.strum_scale = strum_cfg.scale;
             out.strum_offsets = strum_cfg.offsets;
             out.strum_pixel = strum_cfg.is_pixel;
-            let key = strum_cfg.asset_path.as_deref().unwrap_or("shared:noteStrumline");
+            let key = chain
+                .iter()
+                .filter_map(|d| d.assets.note_strumline.as_ref()?.asset_path.as_deref())
+                .next()
+                .unwrap_or("shared:noteStrumline");
             if let Some(sparrow) = load_sparrow_sheet(assets, gpu, key) {
                 out.strum_tex = Some((sparrow.texture, sparrow.tex_size));
-                if let Some(d) = &strum_cfg.data {
+                if let Some(d) = chain
+                    .iter()
+                    .find_map(|layer| layer.assets.note_strumline.as_ref()?.data.as_ref())
+                {
                     let prefixes = [
                         (
                             &d.left_static.prefix,
@@ -340,12 +342,18 @@ impl NoteStyleAssets {
                             out.strum_confirm_hold[i] = collect_prefix(&sparrow.atlas, p);
                         }
                     }
-                    if let Some(hitbox_frame) = out
-                        .strum_static
-                        .iter()
-                        .find_map(|frames| frames.first())
-                        .or_else(|| sparrow.atlas.frames().first())
-                    {
+                    let mut max_w = 0.0_f32;
+                    let mut max_h = 0.0_f32;
+                    for frames in &out.strum_static {
+                        if let Some(f) = frames.first() {
+                            let src = f.source_size();
+                            max_w = max_w.max(src[0] * out.strum_scale);
+                            max_h = max_h.max(src[1] * out.strum_scale);
+                        }
+                    }
+                    if max_w > 0.0 && max_h > 0.0 {
+                        out.strum_hitbox = [max_w, max_h];
+                    } else if let Some(hitbox_frame) = sparrow.atlas.frames().first() {
                         let src = hitbox_frame.source_size();
                         out.strum_hitbox = [src[0] * out.strum_scale, src[1] * out.strum_scale];
                     }
@@ -354,14 +362,21 @@ impl NoteStyleAssets {
         }
 
         // 2. Note heads.
-        if let Some(note_cfg) = &data.assets.note {
+        if let Some(note_cfg) = chain.iter().find_map(|d| d.assets.note.as_ref()) {
             out.note_scale = note_cfg.scale;
             out.note_offsets = note_cfg.offsets;
             out.note_pixel = note_cfg.is_pixel;
-            let key = note_cfg.asset_path.as_deref().unwrap_or("shared:notes");
+            let key = chain
+                .iter()
+                .filter_map(|d| d.assets.note.as_ref()?.asset_path.as_deref())
+                .next()
+                .unwrap_or("shared:notes");
             if let Some(sparrow) = load_sparrow_sheet(assets, gpu, key) {
                 out.note_tex = Some((sparrow.texture, sparrow.tex_size));
-                if let Some(d) = &note_cfg.data {
+                if let Some(d) = chain
+                    .iter()
+                    .find_map(|layer| layer.assets.note.as_ref()?.data.as_ref())
+                {
                     let prefixes = [
                         d.left.prefix.as_deref(),
                         d.down.prefix.as_deref(),
@@ -383,21 +398,28 @@ impl NoteStyleAssets {
         }
 
         // 3. Sustain hold strip.
-        if let Some(hold_cfg) = &data.assets.hold_note {
+        if let Some(hold_cfg) = chain.iter().find_map(|d| d.assets.hold_note.as_ref()) {
             out.hold_scale = hold_cfg.scale;
             out.hold_offsets = hold_cfg.offsets;
             out.hold_pixel = hold_cfg.is_pixel;
-            let key = hold_cfg.asset_path.as_deref().unwrap_or("NOTE_hold_assets");
+            let key = chain
+                .iter()
+                .filter_map(|d| d.assets.hold_note.as_ref()?.asset_path.as_deref())
+                .next()
+                .unwrap_or("NOTE_hold_assets");
             out.hold_tex = upload_png_from_path(gpu, Some(key), &assets.image(key));
         }
 
         // 4. Note splashes.
-        if let Some(splash_cfg) = &data.assets.note_splash {
+        if let Some(splash_cfg) = chain.iter().find_map(|d| d.assets.note_splash.as_ref()) {
             out.splash_scale = splash_cfg.scale;
             out.splash_offsets = splash_cfg.offsets;
             out.splash_alpha = splash_cfg.alpha;
             out.splash_pixel = splash_cfg.is_pixel;
-            if let Some(d) = &splash_cfg.data {
+            if let Some(d) = chain
+                .iter()
+                .find_map(|layer| layer.assets.note_splash.as_ref()?.data.as_ref())
+            {
                 out.splash_fps = d.framerate_default.max(1) as f32;
                 out.splash_blend = if d.blend_mode.eq_ignore_ascii_case("add") {
                     BlendMode::Add
@@ -407,7 +429,11 @@ impl NoteStyleAssets {
                     BlendMode::Normal
                 };
                 if d.enabled {
-                    let key = splash_cfg.asset_path.as_deref().unwrap_or("shared:noteSplashes");
+                    let key = chain
+                        .iter()
+                        .filter_map(|l| l.assets.note_splash.as_ref()?.asset_path.as_deref())
+                        .next()
+                        .unwrap_or("shared:noteSplashes");
                     if let Some(sparrow) = load_sparrow_sheet(assets, gpu, key) {
                         out.splash_tex = Some((sparrow.texture, sparrow.tex_size));
                         if let Some(f0) = sparrow.atlas.frames().first() {
@@ -437,55 +463,66 @@ impl NoteStyleAssets {
         }
 
         // 5. Hold note covers.
-        if let Some(cover_cfg) = &data.assets.hold_note_cover {
+        if let Some(cover_cfg) = chain.iter().find_map(|d| d.assets.hold_note_cover.as_ref()) {
             out.cover_scale = cover_cfg.scale;
             out.cover_offsets = cover_cfg.offsets;
             out.cover_pixel = cover_cfg.is_pixel;
-            if let Some(d) = &cover_cfg.data {
+            if let Some(d) = chain
+                .iter()
+                .find_map(|layer| layer.assets.hold_note_cover.as_ref()?.data.as_ref())
+            {
                 out.cover_enabled = d.enabled;
                 if d.enabled {
-                    let shared_key = cover_cfg.asset_path.as_deref().filter(|s| !s.is_empty());
+                    let shared_key = chain
+                        .iter()
+                        .filter_map(|l| l.assets.hold_note_cover.as_ref()?.asset_path.as_deref())
+                        .find(|s| !s.is_empty());
                     let dirs = [&d.left, &d.down, &d.up, &d.right];
+                    let mut cached_shared: Option<LoadedSparrow> = None;
                     for (i, dir_opt) in dirs.into_iter().enumerate() {
                         let Some(dir_cfg) = dir_opt.as_ref() else {
                             continue;
                         };
-                        let Some(key) = dir_cfg
-                            .asset_path
-                            .as_deref()
-                            .filter(|s| !s.is_empty())
-                            .or(shared_key)
-                        else {
+                        let per_dir = dir_cfg.asset_path.as_deref().filter(|s| !s.is_empty());
+                        let sparrow_owned: Option<LoadedSparrow>;
+                        let sparrow = if let Some(k) = per_dir {
+                            sparrow_owned = load_sparrow_sheet(assets, gpu, k);
+                            sparrow_owned.as_ref()
+                        } else if let Some(sk) = shared_key {
+                            if cached_shared.is_none() {
+                                cached_shared = load_sparrow_sheet(assets, gpu, sk);
+                            }
+                            cached_shared.as_ref()
+                        } else {
+                            None
+                        };
+                        let Some(sparrow) = sparrow else {
                             continue;
                         };
-                        if let Some(sparrow) = load_sparrow_sheet(assets, gpu, key) {
-                            out.cover_tex[i] = Some((sparrow.texture, sparrow.tex_size));
-                            if let Some(p) = dir_cfg.start.as_ref().and_then(|a| a.prefix.as_deref())
-                            {
-                                out.cover_start[i] = collect_prefix(&sparrow.atlas, p);
-                            }
-                            if let Some(p) = dir_cfg.hold.as_ref().and_then(|a| a.prefix.as_deref())
-                            {
-                                out.cover_loop[i] = collect_prefix(&sparrow.atlas, p);
-                            }
-                            if let Some(p) = dir_cfg.end.as_ref().and_then(|a| a.prefix.as_deref()) {
-                                out.cover_end[i] = collect_prefix(&sparrow.atlas, p);
-                            }
-                            if let Some(f) = out.cover_start[i]
-                                .first()
-                                .or_else(|| out.cover_loop[i].first())
-                            {
-                                let src = f.source_size();
-                                out.cover_hitbox =
-                                    [src[0] * out.cover_scale, src[1] * out.cover_scale];
-                            }
+                        out.cover_tex[i] = Some((sparrow.texture, sparrow.tex_size));
+                        if let Some(p) = dir_cfg.start.as_ref().and_then(|a| a.prefix.as_deref()) {
+                            out.cover_start[i] = collect_prefix(&sparrow.atlas, p);
+                        }
+                        if let Some(p) = dir_cfg.hold.as_ref().and_then(|a| a.prefix.as_deref()) {
+                            out.cover_loop[i] = collect_prefix(&sparrow.atlas, p);
+                        }
+                        if let Some(p) = dir_cfg.end.as_ref().and_then(|a| a.prefix.as_deref()) {
+                            out.cover_end[i] = collect_prefix(&sparrow.atlas, p);
+                        }
+                        if let Some(f) = out.cover_start[i]
+                            .first()
+                            .or_else(|| out.cover_loop[i].first())
+                        {
+                            let src = f.source_size();
+                            out.cover_hitbox =
+                                [src[0] * out.cover_scale, src[1] * out.cover_scale];
                         }
                     }
                 }
             }
         }
 
-        out.load_popups_from_data(&data, assets, gpu);
+        out.load_popups_from_data(data, assets, gpu);
 
         out
     }
@@ -655,6 +692,7 @@ impl NoteStyleAssets {
         {
             style.splash_frames = first_splash.len();
         }
+        style.splash_fps = self.splash_fps.max(1.0);
         if let Some(start) = self.cover_start.iter().find(|v| !v.is_empty()) {
             style.cover_start_frames = start.len();
         }
@@ -730,6 +768,39 @@ fn load_sparrow_sheet(
         tex_size,
         atlas,
     })
+}
+
+fn load_style_chain(assets: &AssetLocator, style_id: &str) -> Option<Vec<NoteStyleData>> {
+    let mut chain: Vec<NoteStyleData> = Vec::with_capacity(4);
+    let mut next_id = Some(style_id.to_owned());
+    let mut seen: Vec<String> = Vec::with_capacity(4);
+    for _ in 0..4 {
+        let Some(id) = next_id.take() else {
+            break;
+        };
+        let lower = id.to_ascii_lowercase();
+        if seen.contains(&lower) {
+            break;
+        }
+        seen.push(lower.clone());
+        let raw = fs::read_to_string(assets.data_json(&format!("notestyles/{id}"))).ok();
+        let parsed = raw.and_then(|s| serde_json::from_str::<NoteStyleData>(&s).ok());
+        if let Some(data) = parsed {
+            next_id = data
+                .fallback
+                .as_deref()
+                .filter(|s| !s.is_empty())
+                .map(str::to_owned)
+                .or_else(|| {
+                    (!lower.eq_ignore_ascii_case(DEFAULT_NOTE_STYLE))
+                        .then(|| DEFAULT_NOTE_STYLE.to_owned())
+                });
+            chain.push(data);
+        } else if !lower.eq_ignore_ascii_case(DEFAULT_NOTE_STYLE) {
+            next_id = Some(DEFAULT_NOTE_STYLE.to_owned());
+        }
+    }
+    (!chain.is_empty()).then_some(chain)
 }
 
 fn collect_prefix(atlas: &SparrowAtlas, prefix: &str) -> Vec<AtlasFrame> {

@@ -3,6 +3,7 @@
 
 mod abot;
 mod abot_vis;
+mod blazin;
 mod speaker;
 mod spirit;
 mod spraycan;
@@ -17,6 +18,8 @@ use fnfrs_audio::{DecodedAudio, VizSampleHistory};
 use fnfrs_render::TextureHandle;
 
 use abot::ABotSpeaker;
+pub use blazin::BlazinNoteKind;
+use blazin::{parse_blazin_note_kind, BlazinFighterState};
 use speaker::SpeakerShooter;
 use spirit::SpiritTrail;
 use spraycan::{QuadCarTween, SpraycanPool};
@@ -37,6 +40,7 @@ pub enum NoteKindTag {
     Weekend1KneeCan,
     Weekend1CockGun,
     Weekend1FireGun,
+    Blazin(BlazinNoteKind),
     Other,
 }
 
@@ -67,8 +71,13 @@ impl NoteKindTag {
             Self::Weekend1KneeCan
         } else if k.eq_ignore_ascii_case("weekend-1-cockgun") {
             Self::Weekend1CockGun
-        } else if k.eq_ignore_ascii_case("weekend-1-firegun") {
+        } else if k.eq_ignore_ascii_case("weekend-1-firegun")
+            || k.eq_ignore_ascii_case("weekend-1-firegun-hip")
+            || k.eq_ignore_ascii_case("weekend-1-firegun-far")
+        {
             Self::Weekend1FireGun
+        } else if let Some(blazin_kind) = parse_blazin_note_kind(k) {
+            Self::Blazin(blazin_kind)
         } else {
             Self::Other
         }
@@ -83,6 +92,9 @@ pub struct ScriptSfxSlots {
     pub car_pass: [Option<usize>; 2],
     pub lightning: [Option<usize>; 3],
     pub door_kick: [Option<usize>; 2],
+    pub gun_prep: Option<usize>,
+    pub pico_bonk: Option<usize>,
+    pub shot: [Option<usize>; 4],
 }
 
 /// Runtime SFX cue emitted cleanly by [`NativeScriptHost::update`] / `on_beat_hit`.
@@ -97,6 +109,7 @@ pub struct ScriptSfxCue {
 pub struct ScriptStepOutput {
     pub cues: [Option<ScriptSfxCue>; 4],
     pub count: usize,
+    pub camera_shake: Option<[f32; 2]>,
 }
 
 impl ScriptStepOutput {
@@ -248,6 +261,7 @@ pub struct NativeScriptHost {
     abot: ABotSpeaker,
     runners: TankmanRunners,
     spraycans: SpraycanPool,
+    blazin: BlazinFighterState,
     sfx: ScriptSfxSlots,
     rng: ScriptRng,
     rain_enabled: bool,
@@ -276,6 +290,7 @@ impl NativeScriptHost {
             abot: ABotSpeaker::default(),
             runners: TankmanRunners::default(),
             spraycans: SpraycanPool::default(),
+            blazin: BlazinFighterState::default(),
             sfx: ScriptSfxSlots::default(),
             rng: ScriptRng(0x5A17_C0DE),
             rain_enabled: false,

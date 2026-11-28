@@ -1,3 +1,6 @@
+use fnfrs_core::scoring::Judgement;
+
+use super::blazin::{on_blazin_ghost_miss, on_blazin_note_hit, on_blazin_note_miss};
 use super::spraycan::QuadCarTween;
 use super::{NativeScriptHost, NoteKindTag, ScriptStepOutput, StageScript};
 use crate::character::BaseCharacter;
@@ -198,17 +201,46 @@ impl NativeScriptHost {
         }
     }
 
-    /// Plays note-kind-aware singing/special animations for player & opponent (`parents-christmas`, `spooky-dark`, `sserafim`, `2hot`, etc.).
+    /// Returns `true` when `weekend-1-firegun` notes are currently permitted (`gunCocked`).
+    #[inline]
+    #[must_use]
+    pub fn can_fire_gun(&self) -> bool {
+        !self.spraycans.enabled || self.spraycans.gun_cocked_timer_s > 0.0
+    }
+
+    /// Plays note-kind-aware singing/special animations for player & opponent (`parents-christmas`, `spooky-dark`, `sserafim`, `2hot`, `blazin`, etc.).
+    #[allow(clippy::too_many_arguments)]
     pub fn on_note_hit(
         &mut self,
         is_player: bool,
         dir: NoteDirection,
         kind: NoteKindTag,
         mut character: Option<&mut BaseCharacter>,
+        dad_for_blazin: Option<&mut BaseCharacter>,
+        judgement: Option<Judgement>,
+        health: f32,
         stage: Option<&Stage>,
-    ) {
+    ) -> ScriptStepOutput {
+        let mut out = ScriptStepOutput::default();
         if let StageScript::PhillyBlazin { rain_time_scale, .. } = &mut self.stage_script {
             *rain_time_scale += 0.7;
+            if is_player {
+                if let NoteKindTag::Blazin(b_kind) = kind {
+                    let is_poor = matches!(judgement, Some(Judgement::Bad | Judgement::Shit));
+                    let is_low_hp = health <= 0.60;
+                    let counter_roll = self.rng.bool_pct(30);
+                    out.camera_shake = on_blazin_note_hit(
+                        &mut self.blazin,
+                        b_kind,
+                        is_poor,
+                        is_low_hp,
+                        counter_roll,
+                        character,
+                        dad_for_blazin,
+                    );
+                    return out;
+                }
+            }
         }
         if let StageScript::Sserafim {
             yunjin,
@@ -237,7 +269,7 @@ impl NativeScriptHost {
             }
         }
         if kind == NoteKindTag::NoAnim {
-            return;
+            return out;
         }
         if is_player {
             match kind {
@@ -247,7 +279,10 @@ impl NativeScriptHost {
                     if let Some(c) = character {
                         c.play_animation("cock", true, true);
                     }
-                    return;
+                    if let Some(slot) = self.sfx.gun_prep {
+                        out.push(slot, 1.0);
+                    }
+                    return out;
                 }
                 NoteKindTag::Weekend1FireGun => {
                     self.abot.look_right();
@@ -255,7 +290,11 @@ impl NativeScriptHost {
                     if let Some(c) = character {
                         c.play_animation("shoot", true, true);
                     }
-                    return;
+                    let shot_idx = (self.rng.next_u32() as usize) % 4;
+                    if let Some(slot) = self.sfx.shot[shot_idx] {
+                        out.push(slot, 1.0);
+                    }
+                    return out;
                 }
                 _ => {}
             }
@@ -270,20 +309,20 @@ impl NativeScriptHost {
                         if c.id.eq_ignore_ascii_case("spooky-dark") {
                             c.hold_timer = 0.0;
                             c.play_animation("cheer", true, true);
-                            return;
+                            return out;
                         }
                     }
                 }
                 NoteKindTag::Ugh => {
                     if let Some(c) = character.as_deref_mut() {
                         c.play_animation("ugh", true, true);
-                        return;
+                        return out;
                     }
                 }
                 NoteKindTag::HehPrettyGood => {
                     if let Some(c) = character.as_deref_mut() {
                         c.play_animation("hehPrettyGood", true, true);
-                        return;
+                        return out;
                     }
                 }
                 NoteKindTag::Weekend1LightCan => {
@@ -291,20 +330,20 @@ impl NativeScriptHost {
                     if let Some(c) = character.as_deref_mut() {
                         c.play_animation("lightCan", true, true);
                     }
-                    return;
+                    return out;
                 }
                 NoteKindTag::Weekend1KickCan => {
                     self.spraycans.spawn(stage);
                     if let Some(c) = character.as_deref_mut() {
                         c.play_animation("kickCan", true, true);
                     }
-                    return;
+                    return out;
                 }
                 NoteKindTag::Weekend1KneeCan => {
                     if let Some(c) = character.as_deref_mut() {
                         c.play_animation("kneeCan", true, true);
                     }
-                    return;
+                    return out;
                 }
                 _ => {}
             }
@@ -320,6 +359,63 @@ impl NativeScriptHost {
                 c.play_sing_animation(dir, false, suffix);
             }
         }
+        out
+    }
+
+    /// Handles player miss or ghost miss scripts (e.g. `2hot` spraycan explosion, `blazin` combat).
+    pub fn on_player_miss(
+        &mut self,
+        dir: Option<NoteDirection>,
+        kind: NoteKindTag,
+        mut bf: Option<&mut BaseCharacter>,
+        dad: Option<&mut BaseCharacter>,
+        is_ghost: bool,
+        is_fatal: bool,
+    ) -> ScriptStepOutput {
+        let mut out = ScriptStepOutput::default();
+        if matches!(self.stage_script, StageScript::PhillyBlazin { .. }) {
+            if is_ghost {
+                let should_dodge = self.rng.bool_pct(50);
+                out.camera_shake = on_blazin_ghost_miss(
+                    &mut self.blazin,
+                    is_fatal,
+                    should_dodge,
+                    bf,
+                    dad,
+                );
+                return out;
+            }
+            if let NoteKindTag::Blazin(b_kind) = kind {
+                out.camera_shake =
+                    on_blazin_note_miss(&mut self.blazin, b_kind, is_fatal, bf, dad);
+                return out;
+            }
+        }
+        if kind == NoteKindTag::Weekend1LightCan {
+            self.abot.look_left();
+        } else if kind == NoteKindTag::Weekend1CockGun {
+            self.abot.look_right();
+        } else if kind == NoteKindTag::Weekend1FireGun && self.spraycans.enabled {
+            self.abot.look_right();
+            self.spraycans.gun_cocked_timer_s = 0.0;
+            self.spraycans.miss_next_can();
+            if is_fatal {
+                self.spraycans.start_blacken_death();
+            } else {
+                self.spraycans.start_pico_flicker();
+            }
+            if let Some(c) = bf.as_deref_mut() {
+                c.play_animation("shootMISS", true, true);
+            }
+            if let Some(slot) = self.sfx.pico_bonk {
+                out.push(slot, 1.0);
+            }
+            return out;
+        }
+        if let (Some(d), Some(c)) = (dir, bf) {
+            c.play_sing_animation(d, true, "");
+        }
+        out
     }
 
     /// Beat-triggered stage & character scripts (`spookyMansion`, `phillyTrain`, `limoRide`, `tankman`, `phillyStreets`, `sserafim`, `nene`/`abot`).

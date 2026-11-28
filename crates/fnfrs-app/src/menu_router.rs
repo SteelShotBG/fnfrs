@@ -471,7 +471,7 @@ pub(crate) fn handle_menu_command(
                 state.save.options = opt.options.clone();
                 state.downscroll_pref = state.save.options.downscroll;
                 state.botplay_pref = state.save.options.botplay;
-                state.debug_display.visible = state.save.options.debug_display;
+                state.debug_display.set_visible(state.save.options.debug_display);
                 state.next_frame_deadline = now;
                 let _ = state.save.save_to_disk();
                 if let Some(engine) = audio {

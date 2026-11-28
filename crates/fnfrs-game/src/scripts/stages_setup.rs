@@ -3,6 +3,7 @@ use fnfrs_core::schema::song::SongNoteData;
 use fnfrs_render::{BlendMode, GpuContext};
 
 use super::abot::ABotSpeaker;
+use super::blazin::BlazinFighterState;
 use super::speaker::SpeakerShooter;
 use super::spirit::SpiritTrail;
 use super::spraycan::{QuadCarTween, SpraycanPool};
@@ -255,7 +256,8 @@ impl NativeScriptHost {
         let runners = TankmanRunners::load(song_id, stage_id, picospeaker_notes, assets, gpu, &mut rng);
         let spraycans = SpraycanPool::load(song_id, assets, gpu);
 
-        let rain_enabled = stage_lower == "phillystreetserect"
+        let rain_enabled = stage_lower == "phillystreets"
+            || stage_lower == "phillystreetserect"
             || stage_lower == "phillyblazin"
             || stage_lower == "spookymansionerect";
         let (rain_scale, rain_start_intensity, rain_end_intensity) = if stage_lower == "phillyblazin"
@@ -263,16 +265,16 @@ impl NativeScriptHost {
             (3.6, 0.5, 0.5)
         } else if stage_lower == "spookymansionerect" {
             (7.2, 0.4, 0.4)
-        } else if stage_lower == "phillystreetserect" {
+        } else if stage_lower == "phillystreets" || stage_lower == "phillystreetserect" {
             let song_lower = song_id.to_ascii_lowercase();
             if song_lower == "darnell" {
-                (3.6, 0.002, 0.01)
+                (3.6, 0.0, 0.1)
             } else if song_lower == "lit-up" {
-                (3.6, 0.01, 0.02)
+                (3.6, 0.1, 0.2)
             } else if song_lower == "2hot" {
-                (3.6, 0.02, 0.04)
+                (3.6, 0.2, 0.4)
             } else {
-                (3.6, 0.01, 0.02)
+                (3.6, 0.1, 0.2)
             }
         } else {
             (3.6, 0.0, 0.0)
@@ -288,6 +290,7 @@ impl NativeScriptHost {
             abot,
             runners,
             spraycans,
+            blazin: BlazinFighterState::default(),
             sfx,
             rng,
             rain_enabled,
@@ -365,9 +368,15 @@ impl NativeScriptHost {
                 }
                 if let Some(b) = bf {
                     b.color = [0.871, 0.871, 0.871, 1.0];
+                    b.dance_every = 0.0;
+                    b.play_animation("idle", true, false);
+                    b.z_index = 2000;
                 }
                 if let Some(d) = dad {
                     d.color = [0.871, 0.871, 0.871, 1.0];
+                    d.dance_every = 0.0;
+                    d.play_animation("idle", true, false);
+                    d.z_index = 2000;
                 }
                 if let Some(g) = gf {
                     g.color = [0.533, 0.533, 0.533, 1.0];
@@ -409,6 +418,16 @@ impl NativeScriptHost {
             }
             StageScript::PhillyStreets { .. } => {
                 if let Some(st) = stage {
+                    for prop in &mut st.props {
+                        if prop
+                            .name
+                            .as_deref()
+                            .is_some_and(|n| n.ends_with("_lightmap"))
+                        {
+                            prop.blend = BlendMode::Add;
+                            prop.alpha = 0.6;
+                        }
+                    }
                     if let Some(traffic) = st.get_named_prop_mut("phillyTraffic") {
                         if let Some(bop) = &mut traffic.bopper {
                             bop.play_animation("togreen", true);
@@ -467,6 +486,7 @@ impl NativeScriptHost {
         self.abot.reset();
         self.runners.reset();
         self.spraycans.reset();
+        self.blazin.reset();
         if let Some(st) = stage.as_deref_mut() {
             for prop in &mut st.props {
                 prop.color = [1.0, 1.0, 1.0, 1.0];

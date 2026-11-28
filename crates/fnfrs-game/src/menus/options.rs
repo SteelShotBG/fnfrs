@@ -258,7 +258,7 @@ impl OptionsScreenState {
                     ("CAMERA ZOOMING", self.options.zoom_camera, None),
                     ("NAUGHTYNESS", self.options.naughtyness, None),
                     ("AUTO PAUSE", self.options.auto_pause, None),
-                    ("DEBUG DISPLAY F3", self.options.debug_display, None),
+                    ("DEBUG DISPLAY (F6)", self.options.debug_display, None),
                     ("AUDIO OFFSET MS", false, Some(self.options.audio_offset_ms)),
                 ];
                 for (i, (label, val, opt_ms)) in rows.iter().enumerate() {

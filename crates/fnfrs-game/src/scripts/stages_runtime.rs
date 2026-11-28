@@ -27,7 +27,8 @@ impl NativeScriptHost {
             self.abot.trigger_muzzle_flash(dir);
         }
         self.runners.update(elapsed_s, song_pos_ms, &mut self.rng);
-        self.spraycans.update(elapsed_s, stage.as_deref_mut());
+        self.spraycans
+            .update(elapsed_s, stage.as_deref_mut(), bf.as_deref_mut());
 
         if self.rain_enabled {
             let scale_mult = if let StageScript::PhillyBlazin { rain_time_scale, .. } = &self.stage_script {
