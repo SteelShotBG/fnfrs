@@ -23,7 +23,7 @@ use crate::stage::{Stage, StageProp};
 use crate::strumline::{Strumline, StrumlineVisualStyle};
 use fnfrs_core::paths::AssetLocator;
 use fnfrs_core::schema::character::AnimationData;
-use fnfrs_core::schema::stage::StageDataProp;
+use fnfrs_core::schema::stage::{ScaleSpec, StageDataProp};
 use fnfrs_render::GpuContext;
 /// Initialization parameters for [`PlayScene`].
 #[derive(Debug, Clone)]
@@ -299,13 +299,13 @@ impl PlayScene {
             is_pixel: false,
             flip_x: false,
             flip_y: false,
-            scale: serde_json::json!(1.0),
+            scale: ScaleSpec::Scalar(1.0),
             alpha: 1.0,
             dance_every: 0.0,
             scroll: [1.0, 1.0],
             animations: vec![AnimationData {
                 name: "throw".to_owned(),
-                prefix: "knife toss0".to_owned(),
+                prefix: Some("knife toss0".to_owned()),
                 flip_x: false,
                 flip_y: false,
                 frame_rate: 24,
@@ -313,12 +313,16 @@ impl PlayScene {
                 frame_indices: Vec::new(),
                 offsets: [0.0, 0.0],
                 asset_path: None,
+                anim_type: String::new(),
+                render_type: String::new(),
+                atlas_settings: None,
             }],
             starting_animation: None,
             anim_type: "sparrow".to_owned(),
             angle: 0.0,
             blend: String::new(),
             color: "#FFFFFF".to_owned(),
+            atlas_settings: None,
         };
         let mut prop = StageProp::from_data(&prop_data, assets, gpu);
         prop.visible = false;

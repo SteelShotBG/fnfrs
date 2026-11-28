@@ -185,7 +185,7 @@ pub(super) fn on_blazin_note_hit(
     let mut shake = None;
 
     // Dispatch opponent (`darnell-blazin`) FIRST, matching `pico-blazin.hxc` comment.
-    if let Some(ref d) = dad {
+    if let Some(ref mut d) = dad {
         if is_poor_hit && is_low_health && darnell_counter_uppercut {
             apply_fighter_pose(d, &mut state.darnell_alt, MovePose::UppercutPrep, &mut shake);
         } else if state.darnell_cant_uppercut {
