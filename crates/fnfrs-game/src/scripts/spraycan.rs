@@ -380,7 +380,7 @@ impl SpraycanPool {
         }
         if let Some(ft) = &mut self.flicker_timer_s {
             *ft += dt;
-            if let Some(b) = bf.as_deref_mut() {
+            if let Some(b) = bf {
                 if *ft >= 1.5 {
                     b.visible = true;
                     self.flicker_timer_s = None;
