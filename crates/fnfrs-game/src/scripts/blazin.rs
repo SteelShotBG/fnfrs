@@ -180,7 +180,7 @@ pub(super) fn on_blazin_note_hit(
     is_low_health: bool,
     darnell_counter_uppercut: bool,
     bf: Option<&mut BaseCharacter>,
-    dad: Option<&mut BaseCharacter>,
+    mut dad: Option<&mut BaseCharacter>,
 ) -> Option<[f32; 2]> {
     let mut shake = None;
 
